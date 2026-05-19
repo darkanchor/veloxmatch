@@ -63,26 +63,26 @@ target_include_directories(openmarket_static
 )
 
 set_target_properties(openmatch_shared PROPERTIES
-    OUTPUT_NAME openmatch
+    OUTPUT_NAME veloxmatch
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/openmatch/om_slab.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_hash.h;${CMAKE_SOURCE_DIR}/include/openmatch/orderbook.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_wal.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_perf.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_engine.h"
 )
 
 set_target_properties(openmatch_static PROPERTIES
-    OUTPUT_NAME openmatch
+    OUTPUT_NAME veloxmatch
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/openmatch/om_slab.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_hash.h;${CMAKE_SOURCE_DIR}/include/openmatch/orderbook.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_wal.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_perf.h;${CMAKE_SOURCE_DIR}/include/openmatch/om_engine.h"
 )
 
 set_target_properties(openmarket_shared PROPERTIES
-    OUTPUT_NAME openmarket
+    OUTPUT_NAME veloxmarket
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/openmarket/om_market.h;${CMAKE_SOURCE_DIR}/include/openmarket/om_worker.h"
 )
 
 set_target_properties(openmarket_static PROPERTIES
-    OUTPUT_NAME openmarket
+    OUTPUT_NAME veloxmarket
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/openmarket/om_market.h;${CMAKE_SOURCE_DIR}/include/openmarket/om_worker.h"
 )
 
@@ -143,14 +143,14 @@ target_include_directories(ombus_static
 )
 
 set_target_properties(ombus_shared PROPERTIES
-    OUTPUT_NAME ombus
+    OUTPUT_NAME vmbus
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/ombus/om_bus.h;${CMAKE_SOURCE_DIR}/include/ombus/om_bus_error.h;${CMAKE_SOURCE_DIR}/include/ombus/om_bus_tcp.h"
 )
 
 set_target_properties(ombus_static PROPERTIES
-    OUTPUT_NAME ombus
+    OUTPUT_NAME vmbus
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/ombus/om_bus.h;${CMAKE_SOURCE_DIR}/include/ombus/om_bus_error.h;${CMAKE_SOURCE_DIR}/include/ombus/om_bus_tcp.h"
 )
 

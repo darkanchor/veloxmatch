@@ -14,7 +14,7 @@ This project uses **klib** as a git submodule for data structures and utilities.
 ### Cloning with Submodules
 ```bash
 # Clone with all submodules
-git clone --recursive https://github.com/yourusername/openmatch.git
+git clone --recursive https://github.com/darkanchor/veloxmatch.git
 
 # Or if already cloned without --recursive
 git submodule update --init --recursive

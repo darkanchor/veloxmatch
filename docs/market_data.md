@@ -1,6 +1,6 @@
-# Market Data Aggregation (OpenMarket)
+# Market Data Aggregation (VeloxMarket)
 
-This document describes how OpenMarket consumes WAL records and builds
+This document describes how VeloxMarket consumes WAL records and builds
 **public** and **private** market data per product/price/side.
 
 For optimization planning and capacity-impact estimates, see
@@ -24,7 +24,7 @@ For optimization planning and capacity-impact estimates, see
 
 ## Memory Architecture: Slab + Intrusive Queue
 
-OpenMarket uses the same architectural pattern as OpenMatch:
+VeloxMarket uses the same architectural pattern as VeloxMatch:
 - **Slab allocator** for fixed-size price level slots
 - **Intrusive queues** linking slots together (no external node allocation)
 - **uint32_t indices** instead of pointers (fits more in cache line)
@@ -573,7 +573,7 @@ structures (no sharing).
 
 ## Summary
 
-The slab + intrusive queue design mirrors OpenMatch's architecture:
+The slab + intrusive queue design mirrors VeloxMatch's architecture:
 - Fixed-size slots in a contiguous slab (cache-line aligned)
 - Intrusive queues with uint32_t indices (not pointers)
 - Q0 for free list, Q1 for sorted price ladder

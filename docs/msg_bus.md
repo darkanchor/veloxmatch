@@ -1,6 +1,6 @@
 # om_bus — WAL Distribution Bus
 
-Design and implementation reference for `om_bus`, a library (`libombus`) that
+Design and implementation reference for `om_bus`, a library (`libvmbus`) that
 distributes WAL record streams across process and machine boundaries.
 
 **Status**: Implemented (SHM + TCP transports)
@@ -10,7 +10,7 @@ For performance planning and optimization roadmap, see
 
 ## 1. Overview & Goals
 
-OpenMatch distributes WAL records via two transports in `libombus`:
+VeloxMatch distributes WAL records via two transports in `libvmbus`:
 
 | Transport | Scope | Latency | Use Case |
 |-----------|-------|---------|----------|
@@ -72,7 +72,7 @@ OpenMatch distributes WAL records via two transports in `libombus`:
 The WAL-to-bus connection is made via a header-only glue function
 (`om_bus_attach_wal()` in `om_bus_wal.h`) that sets the WAL's `post_write`
 callback to `om_bus_stream_publish()`. No link-time dependency between
-`libopenmatch` and `libombus`.
+`libveloxmatch` and `libvmbus`.
 
 ## 3. Common Types
 
@@ -573,7 +573,7 @@ static inline void om_bus_attach_wal(OmWal *wal, OmBusStream *stream) {
 }
 ```
 
-No link-time dependency between `libopenmatch` and `libombus` — the connection
+No link-time dependency between `libveloxmatch` and `libvmbus` — the connection
 is made via a function pointer set by application code.
 
 ### 6.2 SHM Bus → Market Worker (`om_bus_market.h`)
@@ -691,7 +691,7 @@ tests/
     test_bus.c               # SHM tests (21), WAL-Bus integration (4), TCP tests (20)
 ```
 
-Build artifacts: `libombus.so` / `libombus.a`
+Build artifacts: `libvmbus.so` / `libvmbus.a`
 
 Dependencies:
 - `librt` (Linux only, for `shm_open`)

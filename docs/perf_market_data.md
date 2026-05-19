@@ -1,6 +1,6 @@
-# OpenMarket Performance Improvement Plan
+# VeloxMarket Performance Improvement Plan
 
-This note captures practical performance improvements for OpenMarket and estimates
+This note captures practical performance improvements for VeloxMarket and estimates
 their impact for the reference workload:
 
 - **5,000 orgs**

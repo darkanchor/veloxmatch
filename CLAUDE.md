@@ -50,7 +50,7 @@ cppcheck --enable=all --suppress=missingIncludeSystem src/
 
 Two artifacts built as shared (.so) and static (.a) libraries:
 
-### OpenMatch (Matching Engine Core)
+### VeloxMatch (Matching Engine Core)
 - **om_slab**: Dual slab allocator - hot fields (64B slots) vs cold aux data, cache-optimized
 - **om_hash**: Pluggable hashmap (khash or khashl backend) for O(1) order lookup
 - **orderbook**: Per-product order books with 4 intrusive queues per slot:
@@ -62,7 +62,7 @@ Two artifacts built as shared (.so) and static (.a) libraries:
 - **om_engine**: Callback-driven matching (can_match, on_match, on_deal, on_booked, on_filled, on_cancel, pre_booked)
 - **om_perf**: Performance presets (HFT ~2-6M/sec, DURABLE ~0.2-0.8M/sec)
 
-### OpenMarket (Market Data Aggregation)
+### VeloxMarket (Market Data Aggregation)
 - **om_worker**: Lock-free 1P-NC ring buffer for WAL record distribution
 - **om_market**: Aggregates WAL into public (product-sharded) and private (org-sharded) ladders
   - Public ladder: total qty at price level

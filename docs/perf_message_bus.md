@@ -1,6 +1,6 @@
 # Message Bus Performance Plan
 
-This document provides a practical performance model for `libombus` and a roadmap
+This document provides a practical performance model for `libvmbus` and a roadmap
 for additional optimization work.
 
 Scope:

@@ -1,11 +1,11 @@
-# OpenMatch
+# VeloxMatch
 
 Three C11 libraries for building low-latency trading systems. Small,
 embeddable, and designed for HFT-style workloads on a single thread per core.
 
 ## Three Artifacts
 
-### OpenMatch — Matching Engine (`libopenmatch`)
+### VeloxMatch — Matching Engine (`libveloxmatch`)
 
 Callback-driven matching core with a cache-friendly dual slab allocator,
 intrusive-queue orderbook, and durable write-ahead log.
@@ -17,7 +17,7 @@ intrusive-queue orderbook, and durable write-ahead log.
 - **Engine callbacks** — `can_match`, `on_deal`, `on_booked`, `on_filled`, `on_cancel`, `pre_booked`
 - **Perf presets** — HFT (~2-6 M/sec), durable (~0.2-0.8 M/sec), and more
 
-### OpenMarket — Market Data Aggregation (`libopenmarket`)
+### VeloxMarket — Market Data Aggregation (`libveloxmarket`)
 
 Consumes WAL records and builds publishable price ladders. Two worker types:
 
@@ -25,7 +25,7 @@ Consumes WAL records and builds publishable price ladders. Two worker types:
 - **Private workers** (org-sharded) — per-org dealable qty via `dealable()` callback, compute-on-publish with no per-org state (~15-25 ns/org fan-out)
 - Delta or full-snapshot publishing, top-N enforcement, dirty tracking
 
-### OmBus — WAL Distribution Bus (`libombus`)
+### VmBus — WAL Distribution Bus (`libvmbus`)
 
 Distributes WAL records across process and machine boundaries via two
 transports: shared memory (same host) and TCP (cross-machine).
@@ -136,7 +136,7 @@ ASAN_OPTIONS=verify_asan_link_order=0 ctest --test-dir build --output-on-failure
 
 ## Core Concepts
 
-### OpenMatch
+### VeloxMatch
 
 #### Slab Allocator (`om_slab`)
 
@@ -181,8 +181,8 @@ Append-only log with replay support. Record types:
 - `OM_WAL_DEACTIVATE` / `OM_WAL_ACTIVATE`
 
 Post-write hook: a generic `post_write(seq, type, data, len, ctx)` callback
-fires after every WAL write, allowing downstream systems (e.g. OmBus) to
-observe records without any link dependency from libopenmatch.
+fires after every WAL write, allowing downstream systems (e.g. VmBus) to
+observe records without any link dependency from libveloxmatch.
 
 Replay API:
 
@@ -237,7 +237,7 @@ Order deactivation/activation:
 - `om_engine_deactivate(order_id)` (remove from book, keep slot)
 - `om_engine_activate(order_id)` (reattempt match as taker)
 
-### OpenMarket
+### VeloxMarket
 
 Aggregates WAL records into publishable market data ladders. Two worker types:
 
@@ -259,7 +259,7 @@ Publishing modes: **delta** (only changed levels) or **full snapshot** (top-N wa
 See [docs/market_data.md](docs/market_data.md) for detailed aggregation flow,
 capacity planning, and per-record cost model.
 
-### OmBus
+### VmBus
 
 Two transports for WAL record distribution: SHM for same-host workers,
 TCP for remote hosts. No serialization -- records are copied inline.
