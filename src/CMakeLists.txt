@@ -159,3 +159,45 @@ install(TARGETS ombus_shared ombus_static
     ARCHIVE DESTINATION lib
     PUBLIC_HEADER DESTINATION include/ombus
 )
+
+# ---------- ombusmp (many-producer/single-consumer queue) ----------
+set(OMBUSMP_SOURCES om_bus_mp.c)
+
+add_library(ombusmp_shared SHARED ${OMBUSMP_SOURCES})
+add_library(ombusmp_static STATIC ${OMBUSMP_SOURCES})
+add_library(ombusmp ALIAS ombusmp_shared)
+
+if(NOT APPLE)
+    target_link_libraries(ombusmp_shared rt)
+    target_link_libraries(ombusmp_static rt)
+endif()
+
+target_include_directories(ombusmp_shared
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_include_directories(ombusmp_static
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+set_target_properties(ombusmp_shared PROPERTIES
+    OUTPUT_NAME vmbusmp
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 1
+    PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/ombus/om_bus_mp.h"
+)
+
+set_target_properties(ombusmp_static PROPERTIES
+    OUTPUT_NAME vmbusmp
+    PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/ombus/om_bus_mp.h"
+)
+
+install(TARGETS ombusmp_shared ombusmp_static
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    PUBLIC_HEADER DESTINATION include/ombus
+)

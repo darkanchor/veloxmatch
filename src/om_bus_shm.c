@@ -224,6 +224,9 @@ int om_bus_stream_create(OmBusStream **out, const OmBusStreamConfig *config) {
     if (slot_size < OM_BUS_SLOT_HEADER_SIZE + 1) {
         return OM_ERR_BUS_INIT;
     }
+    if ((slot_size % OM_BUS_CACHELINE_SIZE) != 0U) {
+        return OM_ERR_BUS_ALIGNMENT;
+    }
 
     size_t total = _om_bus_shm_size(capacity, slot_size, max_consumers);
 
@@ -268,18 +271,18 @@ int om_bus_stream_create(OmBusStream **out, const OmBusStreamConfig *config) {
 
     /* Initialize header */
     OmBusShmHeader *hdr = (OmBusShmHeader *)map;
-    hdr->magic = OM_BUS_SHM_MAGIC;
-    hdr->version = OM_BUS_SHM_VERSION;
-    hdr->slot_size = slot_size;
-    hdr->capacity = capacity;
-    hdr->max_consumers = max_consumers;
-    hdr->flags = config->flags;
-    atomic_init(&hdr->head, 0U);
-    atomic_init(&hdr->min_tail, 0U);
-    atomic_init(&hdr->producer_epoch, _om_bus_monotonic_ns());
-    hdr->staleness_ns = config->staleness_ns;
-    strncpy(hdr->stream_name, config->stream_name, sizeof(hdr->stream_name) - 1);
-    hdr->stream_name[sizeof(hdr->stream_name) - 1] = '\0';
+    hdr->meta.magic = OM_BUS_SHM_MAGIC;
+    hdr->meta.version = OM_BUS_SHM_VERSION;
+    hdr->meta.slot_size = slot_size;
+    hdr->meta.capacity = capacity;
+    hdr->meta.max_consumers = max_consumers;
+    hdr->meta.flags = config->flags;
+    atomic_init(&hdr->head.value, 0U);
+    atomic_init(&hdr->min_tail.value, 0U);
+    atomic_init(&hdr->producer_epoch.value, _om_bus_monotonic_ns());
+    hdr->meta.staleness_ns = config->staleness_ns;
+    strncpy(hdr->meta.stream_name, config->stream_name, sizeof(hdr->meta.stream_name) - 1);
+    hdr->meta.stream_name[sizeof(hdr->meta.stream_name) - 1] = '\0';
 
     /* Initialize consumer tails */
     OmBusConsumerTail *tails = _om_bus_consumer_tails(map);
@@ -329,7 +332,7 @@ int om_bus_stream_publish(OmBusStream *stream, uint64_t wal_seq,
         return OM_ERR_BUS_RECORD_TOO_LARGE;
     }
 
-    uint64_t head = atomic_load_explicit(&stream->hdr->head, memory_order_relaxed);
+    uint64_t head = atomic_load_explicit(&stream->hdr->head.value, memory_order_relaxed);
 
     /* Backpressure: phased spin while ring is full
      * Phase 1: 10 iterations  — cpu_relax()      (~100ns)
@@ -338,12 +341,12 @@ int om_bus_stream_publish(OmBusStream *stream, uint64_t wal_seq,
     if (!_om_bus_is_broadcast(stream->flags)) {
         uint32_t pressure_spins = 0;
         while (1) {
-            uint64_t mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
+            uint64_t mt = atomic_load_explicit(&stream->hdr->min_tail.value, memory_order_acquire);
             if ((head - mt) < stream->capacity) break;
             if ((pressure_spins & 31U) == 0U) {
                 mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
                                             stream->staleness_ns, head);
-                atomic_store_explicit(&stream->hdr->min_tail, mt, memory_order_release);
+                atomic_store_explicit(&stream->hdr->min_tail.value, mt, memory_order_release);
             }
             if (pressure_spins < 10) {
                 _om_bus_cpu_relax();
@@ -366,7 +369,7 @@ int om_bus_stream_publish(OmBusStream *stream, uint64_t wal_seq,
         .payload = payload,
     };
     _om_bus_publish_slot(stream, head, &rec);
-    atomic_store_explicit(&stream->hdr->head, head + 1U, memory_order_release);
+    atomic_store_explicit(&stream->hdr->head.value, head + 1U, memory_order_release);
     stream->records_published++;
 
     return 0;
@@ -382,7 +385,7 @@ int om_bus_stream_publish_batch(OmBusStream *stream, const OmBusRecord *recs,
         if (recs[i].payload_len > max_payload) return OM_ERR_BUS_RECORD_TOO_LARGE;
     }
 
-    uint64_t head = atomic_load_explicit(&stream->hdr->head, memory_order_relaxed);
+    uint64_t head = atomic_load_explicit(&stream->hdr->head.value, memory_order_relaxed);
     uint32_t i = 0;
 
     while (i < count) {
@@ -390,12 +393,12 @@ int om_bus_stream_publish_batch(OmBusStream *stream, const OmBusRecord *recs,
         uint32_t pressure_spins = 0;
         if (!_om_bus_is_broadcast(stream->flags)) {
             while (1) {
-                mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
+                mt = atomic_load_explicit(&stream->hdr->min_tail.value, memory_order_acquire);
                 if ((head - mt) < stream->capacity) break;
                 if ((pressure_spins & 31U) == 0U) {
                     mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
                                                 stream->staleness_ns, head);
-                    atomic_store_explicit(&stream->hdr->min_tail, mt,
+                    atomic_store_explicit(&stream->hdr->min_tail.value, mt,
                                           memory_order_release);
                 }
                 if (pressure_spins < 10) {
@@ -428,7 +431,7 @@ int om_bus_stream_publish_batch(OmBusStream *stream, const OmBusRecord *recs,
     }
 
     /* Single head advancement for the batch */
-    atomic_store_explicit(&stream->hdr->head, head, memory_order_release);
+    atomic_store_explicit(&stream->hdr->head.value, head, memory_order_release);
     stream->records_published += count;
 
     return 0;
@@ -437,8 +440,8 @@ int om_bus_stream_publish_batch(OmBusStream *stream, const OmBusRecord *recs,
 void om_bus_stream_stats(const OmBusStream *s, OmBusStreamStats *out) {
     if (!s || !out) return;
     out->records_published = s->records_published;
-    out->head = atomic_load_explicit(&s->hdr->head, memory_order_relaxed);
-    out->min_tail = atomic_load_explicit(&s->hdr->min_tail, memory_order_relaxed);
+    out->head = atomic_load_explicit(&s->hdr->head.value, memory_order_relaxed);
+    out->min_tail = atomic_load_explicit(&s->hdr->min_tail.value, memory_order_relaxed);
 }
 
 void om_bus_stream_destroy(OmBusStream *stream) {
@@ -498,19 +501,19 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
     OmBusShmHeader *hdr = (OmBusShmHeader *)map;
 
     /* Validate magic & version */
-    if (hdr->magic != OM_BUS_SHM_MAGIC) {
+    if (hdr->meta.magic != OM_BUS_SHM_MAGIC) {
         munmap(map, total);
         return OM_ERR_BUS_MAGIC_MISMATCH;
     }
-    if (hdr->version != OM_BUS_SHM_VERSION) {
+    if (hdr->meta.version != OM_BUS_SHM_VERSION) {
         munmap(map, total);
         return OM_ERR_BUS_VERSION_MISMATCH;
     }
-    if (config->consumer_index >= hdr->max_consumers) {
+    if (config->consumer_index >= hdr->meta.max_consumers) {
         munmap(map, total);
         return OM_ERR_BUS_CONSUMER_ID;
     }
-    if ((hdr->flags & OM_BUS_FLAG_BROADCAST) && config->zero_copy) {
+    if ((hdr->meta.flags & OM_BUS_FLAG_BROADCAST) && config->zero_copy) {
         munmap(map, total);
         return OM_ERR_BUS_INIT;
     }
@@ -526,18 +529,18 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
     ep->hdr = hdr;
     ep->tails = _om_bus_consumer_tails(map);
     ep->consumer_index = config->consumer_index;
-    ep->slot_size = hdr->slot_size;
-    ep->capacity = hdr->capacity;
-    ep->mask = hdr->capacity - 1U;
-    ep->max_consumers = hdr->max_consumers;
-    ep->flags = hdr->flags;
+    ep->slot_size = hdr->meta.slot_size;
+    ep->capacity = hdr->meta.capacity;
+    ep->mask = hdr->meta.capacity - 1U;
+    ep->max_consumers = hdr->meta.max_consumers;
+    ep->flags = hdr->meta.flags;
     ep->zero_copy = config->zero_copy;
     ep->expected_wal_seq = 0;
-    ep->producer_epoch = atomic_load_explicit(&hdr->producer_epoch,
+    ep->producer_epoch = atomic_load_explicit(&hdr->producer_epoch.value,
                                                memory_order_acquire);
 
     if (!config->zero_copy) {
-        ep->copy_buf = malloc(hdr->slot_size);
+        ep->copy_buf = malloc(hdr->meta.slot_size);
         if (!ep->copy_buf) {
             munmap(map, total);
             free(ep);
@@ -546,7 +549,7 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
     }
 
     /* Initialize consumer tail to current head (start from live position) */
-    uint64_t cur_head = atomic_load_explicit(&hdr->head, memory_order_acquire);
+    uint64_t cur_head = atomic_load_explicit(&hdr->head.value, memory_order_acquire);
     atomic_store_explicit(&ep->tails[config->consumer_index].tail,
                           cur_head, memory_order_release);
     atomic_store_explicit(&ep->tails[config->consumer_index].wal_seq,
@@ -582,11 +585,11 @@ static void _om_bus_endpoint_advance(OmBusEndpoint *ep, uint64_t old_tail,
 
     if (_om_bus_is_broadcast(ep->flags)) return;
 
-    uint64_t cached_min = atomic_load_explicit(&ep->hdr->min_tail, memory_order_acquire);
+    uint64_t cached_min = atomic_load_explicit(&ep->hdr->min_tail.value, memory_order_acquire);
     if (old_tail == cached_min || new_tail < cached_min) {
         uint64_t mt = _om_bus_min_tail_live(ep->tails, ep->max_consumers,
-                                            ep->hdr->staleness_ns, new_tail);
-        atomic_store_explicit(&ep->hdr->min_tail, mt, memory_order_release);
+                                            ep->hdr->meta.staleness_ns, new_tail);
+        atomic_store_explicit(&ep->hdr->min_tail.value, mt, memory_order_release);
     }
 }
 
@@ -594,7 +597,7 @@ int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec) {
     if (!ep || !rec) return OM_ERR_BUS_INIT;
 
     /* Epoch check: detect producer restart */
-    uint64_t epoch = atomic_load_explicit(&ep->hdr->producer_epoch,
+    uint64_t epoch = atomic_load_explicit(&ep->hdr->producer_epoch.value,
                                            memory_order_acquire);
     if (epoch != ep->producer_epoch) return OM_ERR_BUS_EPOCH_CHANGED;
 
@@ -661,7 +664,7 @@ int om_bus_endpoint_poll_batch(OmBusEndpoint *ep, OmBusRecord *recs,
     if (_om_bus_is_broadcast(ep->flags) && max_count > 1) max_count = 1;
 
     /* Epoch check */
-    uint64_t epoch = atomic_load_explicit(&ep->hdr->producer_epoch,
+    uint64_t epoch = atomic_load_explicit(&ep->hdr->producer_epoch.value,
                                            memory_order_acquire);
     if (epoch != ep->producer_epoch) return OM_ERR_BUS_EPOCH_CHANGED;
 
@@ -737,7 +740,7 @@ int om_bus_endpoint_poll_batch(OmBusEndpoint *ep, OmBusRecord *recs,
 int om_bus_endpoint_seek_head(OmBusEndpoint *ep) {
     if (!ep) return OM_ERR_BUS_INIT;
 
-    uint64_t head = atomic_load_explicit(&ep->hdr->head, memory_order_acquire);
+    uint64_t head = atomic_load_explicit(&ep->hdr->head.value, memory_order_acquire);
     atomic_store_explicit(&ep->tails[ep->consumer_index].tail,
                           head, memory_order_release);
     atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,

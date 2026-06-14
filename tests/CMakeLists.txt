@@ -8,10 +8,11 @@ set(TEST_SOURCES
     test_engine.c
     test_market.c
     test_bus.c
+    test_bus_mp.c
 )
 
 add_executable(test_runner ${TEST_SOURCES})
-target_link_libraries(test_runner openmatch openmarket ombus check Threads::Threads)
+target_link_libraries(test_runner openmatch openmarket ombus ombusmp check Threads::Threads)
 if(NOT APPLE)
     target_link_libraries(test_runner rt)
 endif()

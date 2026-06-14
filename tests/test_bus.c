@@ -44,6 +44,21 @@ START_TEST(test_bus_create_destroy) {
 }
 END_TEST
 
+START_TEST(test_bus_rejects_unaligned_slot_size) {
+    OmBusStream *stream = NULL;
+    OmBusStreamConfig cfg = {
+        .stream_name = test_shm_name("align"),
+        .capacity = 64,
+        .slot_size = 96,
+        .max_consumers = 1,
+        .flags = 0,
+    };
+
+    ck_assert_int_eq(om_bus_stream_create(&stream, &cfg), OM_ERR_BUS_ALIGNMENT);
+    ck_assert_ptr_null(stream);
+}
+END_TEST
+
 /* ---- Test: single publish + poll roundtrip ---- */
 START_TEST(test_bus_publish_poll) {
     const char *name = test_shm_name("pubpoll");
@@ -2270,6 +2285,7 @@ Suite *bus_suite(void) {
     Suite *s = suite_create("Bus");
     TCase *tc = tcase_create("SHM");
     tcase_add_test(tc, test_bus_create_destroy);
+    tcase_add_test(tc, test_bus_rejects_unaligned_slot_size);
     tcase_add_test(tc, test_bus_publish_poll);
     tcase_add_test(tc, test_bus_batch);
     tcase_add_test(tc, test_bus_multi_consumer);

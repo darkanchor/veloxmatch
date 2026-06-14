@@ -35,6 +35,7 @@ typedef enum OmBusError {
     OM_ERR_BUS_TCP_SLOW_WARNING = -822, /**< Server warned: slow client, imminent disconnect */
     OM_ERR_BUS_REORDER_DETECTED = -823, /**< WAL sequence went backward */
     OM_ERR_BUS_LAPPED           = -824, /**< Consumer was overrun in broadcast mode */
+    OM_ERR_BUS_ALIGNMENT        = -825, /**< SHM layout alignment invalid */
 } OmBusError;
 
 /**
@@ -71,6 +72,7 @@ static inline const char *om_bus_error_string(int err) {
         case OM_ERR_BUS_TCP_SLOW_WARNING: return "TCP slow client warning";
         case OM_ERR_BUS_REORDER_DETECTED: return "WAL sequence reorder detected";
         case OM_ERR_BUS_LAPPED:          return "Bus consumer lapped";
+        case OM_ERR_BUS_ALIGNMENT:       return "Bus alignment invalid";
         default:                         return "Unknown bus error";
     }
 }

@@ -24,10 +24,11 @@
  * ============================================================================ */
 
 #define OM_BUS_SHM_MAGIC       0x4F4D4253U  /* "OMBS" */
-#define OM_BUS_SHM_VERSION     1U
+#define OM_BUS_SHM_VERSION     2U
 #define OM_BUS_HEADER_PAGE     4096U
+#define OM_BUS_CACHELINE_SIZE  64U
 #define OM_BUS_SLOT_HEADER_SIZE 24U
-#define OM_BUS_CONSUMER_ALIGN  64U
+#define OM_BUS_CONSUMER_ALIGN  OM_BUS_CACHELINE_SIZE
 #define OM_BUS_DEFAULT_SLOT_SIZE    256U
 #define OM_BUS_DEFAULT_CAPACITY     4096U
 #define OM_BUS_DEFAULT_MAX_CONSUMERS 8U
@@ -53,19 +54,29 @@ typedef struct OmBusSlotHeader {
  * SHM Header (4096 bytes, page-aligned) — first page of SHM file
  * ============================================================================ */
 
-typedef struct OmBusShmHeader {
+typedef struct OmBusShmMetaLine {
     uint32_t magic;             /* 0x4F4D4253 ("OMBS") */
-    uint32_t version;           /* Protocol version (1) */
+    uint32_t version;           /* Protocol version */
     uint32_t slot_size;         /* Bytes per slot (default 256) */
     uint32_t capacity;          /* Number of slots (power of two) */
     uint32_t max_consumers;     /* Maximum consumer count */
     uint32_t flags;             /* Feature flags (OM_BUS_FLAG_CRC, etc.) */
-    _Atomic uint64_t head;      /* Producer head position */
-    _Atomic uint64_t min_tail;  /* Cached minimum consumer tail */
-    _Atomic uint64_t producer_epoch; /* Incremented on each stream_create */
     uint64_t staleness_ns;      /* Consumer staleness threshold for non-broadcast mode */
     char stream_name[64];       /* Null-terminated stream name */
-    uint8_t _pad[OM_BUS_HEADER_PAGE - 120];
+    uint8_t _pad[32];           /* Pad metadata block to 2 cache lines */
+} OmBusShmMetaLine;
+
+typedef struct OmBusAtomicLine {
+    _Atomic uint64_t value;
+    uint8_t _pad[56];
+} OmBusAtomicLine;
+
+typedef struct OmBusShmHeader {
+    OmBusShmMetaLine meta;
+    OmBusAtomicLine head;       /* Producer head position */
+    OmBusAtomicLine min_tail;   /* Cached minimum consumer tail */
+    OmBusAtomicLine producer_epoch; /* Incremented on each stream_create */
+    uint8_t _pad[OM_BUS_HEADER_PAGE - 320];
 } OmBusShmHeader;
 
 /* ============================================================================
@@ -78,6 +89,15 @@ typedef struct OmBusConsumerTail {
     _Atomic uint64_t last_poll_ns; /* clock_gettime(MONOTONIC) at last poll */
     uint8_t _pad[40];           /* Pad to 64 bytes (cache line) */
 } OmBusConsumerTail;
+
+_Static_assert(sizeof(OmBusShmMetaLine) == 2U * OM_BUS_CACHELINE_SIZE,
+               "OmBusShmMetaLine must be two cache lines");
+_Static_assert(sizeof(OmBusAtomicLine) == OM_BUS_CACHELINE_SIZE,
+               "OmBusAtomicLine must be one cache line");
+_Static_assert(sizeof(OmBusShmHeader) == OM_BUS_HEADER_PAGE,
+               "OmBusShmHeader must occupy exactly one page");
+_Static_assert(sizeof(OmBusConsumerTail) == OM_BUS_CACHELINE_SIZE,
+               "OmBusConsumerTail must be one cache line");
 
 /* ============================================================================
  * Output record — delivered to consumers
