@@ -229,6 +229,131 @@ START_TEST(test_bus_backpressure) {
 }
 END_TEST
 
+/* ---- Test: broadcast mode publish never waits for consumers ---- */
+START_TEST(test_bus_broadcast_publish_overwrites_without_consumers) {
+    const char *name = test_shm_name("bcastnocons");
+    OmBusStream *stream = NULL;
+    OmBusStreamConfig scfg = {
+        .stream_name = name,
+        .capacity = 4,
+        .slot_size = 64,
+        .max_consumers = 2,
+        .flags = OM_BUS_FLAG_BROADCAST,
+    };
+    ck_assert_int_eq(om_bus_stream_create(&stream, &scfg), 0);
+
+    for (uint64_t i = 1; i <= 16; i++) {
+        uint32_t val = (uint32_t)i;
+        ck_assert_int_eq(om_bus_stream_publish(stream, i, 1, &val, sizeof(val)), 0);
+    }
+
+    OmBusStreamStats stats;
+    om_bus_stream_stats(stream, &stats);
+    ck_assert_uint_eq(stats.head, 16);
+    ck_assert_uint_eq(stats.records_published, 16);
+
+    om_bus_stream_destroy(stream);
+}
+END_TEST
+
+/* ---- Test: broadcast consumers receive explicit lapped errors ---- */
+START_TEST(test_bus_broadcast_lapped_seek_head_gap) {
+    const char *name = test_shm_name("bcastlap");
+    OmBusStream *stream = NULL;
+    OmBusStreamConfig scfg = {
+        .stream_name = name,
+        .capacity = 4,
+        .slot_size = 64,
+        .max_consumers = 1,
+        .flags = OM_BUS_FLAG_BROADCAST,
+    };
+    ck_assert_int_eq(om_bus_stream_create(&stream, &scfg), 0);
+
+    OmBusEndpoint *ep = NULL;
+    OmBusEndpointConfig ecfg = {
+        .stream_name = name,
+        .consumer_index = 0,
+        .zero_copy = false,
+    };
+    ck_assert_int_eq(om_bus_endpoint_open(&ep, &ecfg), 0);
+
+    uint32_t val = 1;
+    ck_assert_int_eq(om_bus_stream_publish(stream, 1, 1, &val, sizeof(val)), 0);
+
+    OmBusRecord rec;
+    ck_assert_int_eq(om_bus_endpoint_poll(ep, &rec), 1);
+    ck_assert_uint_eq(rec.wal_seq, 1);
+
+    for (uint64_t i = 2; i <= 6; i++) {
+        val = (uint32_t)i;
+        ck_assert_int_eq(om_bus_stream_publish(stream, i, 1, &val, sizeof(val)), 0);
+    }
+
+    ck_assert_int_eq(om_bus_endpoint_poll(ep, &rec), OM_ERR_BUS_LAPPED);
+    ck_assert_int_eq(om_bus_endpoint_seek_head(ep), 0);
+
+    val = 7;
+    ck_assert_int_eq(om_bus_stream_publish(stream, 7, 1, &val, sizeof(val)), 0);
+    ck_assert_int_eq(om_bus_endpoint_poll(ep, &rec), OM_ERR_BUS_GAP_DETECTED);
+    ck_assert_uint_eq(rec.wal_seq, 7);
+    ck_assert_int_eq(memcmp(rec.payload, &val, sizeof(val)), 0);
+
+    om_bus_endpoint_close(ep);
+    om_bus_stream_destroy(stream);
+}
+END_TEST
+
+/* ---- Test: broadcast mode rejects zero-copy endpoints ---- */
+START_TEST(test_bus_broadcast_rejects_zero_copy) {
+    const char *name = test_shm_name("bcastzc");
+    OmBusStream *stream = NULL;
+    OmBusStreamConfig scfg = {
+        .stream_name = name,
+        .capacity = 4,
+        .slot_size = 64,
+        .max_consumers = 1,
+        .flags = OM_BUS_FLAG_BROADCAST,
+    };
+    ck_assert_int_eq(om_bus_stream_create(&stream, &scfg), 0);
+
+    OmBusEndpoint *ep = NULL;
+    OmBusEndpointConfig ecfg = {
+        .stream_name = name,
+        .consumer_index = 0,
+        .zero_copy = true,
+    };
+    ck_assert_int_eq(om_bus_endpoint_open(&ep, &ecfg), OM_ERR_BUS_INIT);
+
+    om_bus_stream_destroy(stream);
+}
+END_TEST
+
+/* ---- Test: non-broadcast mode does not pin full when no consumers are live ---- */
+START_TEST(test_bus_no_live_consumers_do_not_pin_full_ring) {
+    const char *name = test_shm_name("nolivetails");
+    OmBusStream *stream = NULL;
+    OmBusStreamConfig scfg = {
+        .stream_name = name,
+        .capacity = 4,
+        .slot_size = 64,
+        .max_consumers = 2,
+        .flags = 0,
+    };
+    ck_assert_int_eq(om_bus_stream_create(&stream, &scfg), 0);
+
+    for (uint64_t i = 1; i <= 8; i++) {
+        uint32_t val = (uint32_t)i;
+        ck_assert_int_eq(om_bus_stream_publish(stream, i, 1, &val, sizeof(val)), 0);
+    }
+
+    OmBusStreamStats stats;
+    om_bus_stream_stats(stream, &stats);
+    ck_assert_uint_eq(stats.head, 8);
+
+    om_bus_stream_destroy(stream);
+}
+END_TEST
+
 /* ---- Test: gap detection (non-contiguous wal_seq) ---- */
 START_TEST(test_bus_gap_detection) {
     const char *name = test_shm_name("gap");
@@ -2149,6 +2274,10 @@ Suite *bus_suite(void) {
     tcase_add_test(tc, test_bus_batch);
     tcase_add_test(tc, test_bus_multi_consumer);
     tcase_add_test(tc, test_bus_backpressure);
+    tcase_add_test(tc, test_bus_broadcast_publish_overwrites_without_consumers);
+    tcase_add_test(tc, test_bus_broadcast_lapped_seek_head_gap);
+    tcase_add_test(tc, test_bus_broadcast_rejects_zero_copy);
+    tcase_add_test(tc, test_bus_no_live_consumers_do_not_pin_full_ring);
     tcase_add_test(tc, test_bus_gap_detection);
     tcase_add_test(tc, test_bus_crc_validation);
     tcase_add_test(tc, test_bus_record_too_large);

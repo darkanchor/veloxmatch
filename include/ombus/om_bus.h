@@ -34,6 +34,7 @@
 
 #define OM_BUS_FLAG_CRC              0x1U  /* Enable CRC32 on publish/poll */
 #define OM_BUS_FLAG_REJECT_REORDER   0x2U  /* Return error on wal_seq < expected */
+#define OM_BUS_FLAG_BROADCAST        0x4U  /* Producer overwrites oldest; consumers detect laps */
 
 /* ============================================================================
  * Slot Header (24 bytes) — sits at the start of each ring slot
@@ -62,8 +63,9 @@ typedef struct OmBusShmHeader {
     _Atomic uint64_t head;      /* Producer head position */
     _Atomic uint64_t min_tail;  /* Cached minimum consumer tail */
     _Atomic uint64_t producer_epoch; /* Incremented on each stream_create */
+    uint64_t staleness_ns;      /* Consumer staleness threshold for non-broadcast mode */
     char stream_name[64];       /* Null-terminated stream name */
-    uint8_t _pad[OM_BUS_HEADER_PAGE - 112];
+    uint8_t _pad[OM_BUS_HEADER_PAGE - 120];
 } OmBusShmHeader;
 
 /* ============================================================================
@@ -122,7 +124,8 @@ int om_bus_stream_create(OmBusStream **out, const OmBusStreamConfig *config);
 
 /**
  * Publish a WAL record to the stream.
- * Copies payload into the next ring slot. Blocks (spins) if ring is full.
+ * Copies payload into the next ring slot. Blocks (spins) if ring is full unless
+ * OM_BUS_FLAG_BROADCAST is set, in which case the oldest slot may be overwritten.
  * @param stream  Stream handle
  * @param wal_seq WAL sequence number
  * @param wal_type OmWalType enum value
@@ -179,6 +182,7 @@ typedef struct OmBusEndpoint OmBusEndpoint;
 /**
  * Open an endpoint to an existing SHM stream (consumer side).
  * Maps the shared memory file.
+ * Zero-copy endpoints are rejected for streams using OM_BUS_FLAG_BROADCAST.
  * @param out    Output endpoint handle
  * @param config Endpoint configuration
  * @return 0 on success, negative on error
@@ -191,6 +195,7 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
  * @param rec Output record (payload pointer valid until next poll or close)
  * @return 1 if record available, 0 if empty, negative on error
  *         OM_ERR_BUS_CRC_MISMATCH if CRC check fails
+ *         OM_ERR_BUS_LAPPED if this endpoint was overrun in broadcast mode
  */
 int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec);
 
@@ -203,6 +208,14 @@ int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec);
  */
 int om_bus_endpoint_poll_batch(OmBusEndpoint *ep, OmBusRecord *recs,
                                size_t max_count);
+
+/**
+ * Move this endpoint's cursor to the current live head.
+ * Intended after OM_ERR_BUS_LAPPED in broadcast mode before WAL gap replay.
+ * @param ep Endpoint handle
+ * @return 0 on success, negative on error
+ */
+int om_bus_endpoint_seek_head(OmBusEndpoint *ep);
 
 /**
  * Get current WAL sequence position for this endpoint.

@@ -140,32 +140,26 @@ static inline void *_om_bus_slot(void *base, uint32_t max_consumers,
     return slots_base + idx * slot_size;
 }
 
-/* Scan consumer tails and return the minimum */
-static uint64_t _om_bus_min_tail(OmBusConsumerTail *tails, uint32_t count) {
-    uint64_t min_val = UINT64_MAX;
-    for (uint32_t i = 0; i < count; i++) {
-        uint64_t t = atomic_load_explicit(&tails[i].tail, memory_order_acquire);
-        if (t < min_val) min_val = t;
-    }
-    return min_val == UINT64_MAX ? 0U : min_val;
-}
-
 /* Like _om_bus_min_tail but skips consumers whose last_poll_ns is stale */
 static uint64_t _om_bus_min_tail_live(OmBusConsumerTail *tails, uint32_t count,
-                                       uint64_t staleness_ns) {
+                                       uint64_t staleness_ns, uint64_t fallback) {
     uint64_t min_val = UINT64_MAX;
     uint64_t now = staleness_ns ? _om_bus_monotonic_ns() : 0;
     for (uint32_t i = 0; i < count; i++) {
         uint64_t t = atomic_load_explicit(&tails[i].tail, memory_order_acquire);
+        uint64_t poll_ns = atomic_load_explicit(&tails[i].last_poll_ns,
+                                                 memory_order_relaxed);
+        if (poll_ns == 0) continue;
         if (staleness_ns) {
-            uint64_t poll_ns = atomic_load_explicit(&tails[i].last_poll_ns,
-                                                     memory_order_relaxed);
-            /* Skip consumers that never polled (poll_ns == 0) or are stale */
-            if (poll_ns == 0 || (now - poll_ns) > staleness_ns) continue;
+            if ((now - poll_ns) > staleness_ns) continue;
         }
         if (t < min_val) min_val = t;
     }
-    return min_val == UINT64_MAX ? 0U : min_val;
+    return min_val == UINT64_MAX ? fallback : min_val;
+}
+
+static inline bool _om_bus_is_broadcast(uint32_t flags) {
+    return (flags & OM_BUS_FLAG_BROADCAST) != 0U;
 }
 
 /* ============================================================================
@@ -188,6 +182,32 @@ struct OmBusStream {
     OmBusBackpressureCb backpressure_cb;
     void *backpressure_ctx;
 };
+
+static void _om_bus_publish_slot(OmBusStream *stream, uint64_t pos,
+                                  const OmBusRecord *rec) {
+    uint64_t idx = pos & stream->mask;
+    OmBusSlotHeader *slot = (OmBusSlotHeader *)_om_bus_slot(
+        stream->map, stream->max_consumers, stream->slot_size, idx);
+
+    if (_om_bus_is_broadcast(stream->flags)) {
+        atomic_store_explicit(&slot->seq, 0U, memory_order_relaxed);
+        atomic_thread_fence(memory_order_release);
+    }
+
+    char *payload_dst = (char *)slot + OM_BUS_SLOT_HEADER_SIZE;
+    if (rec->payload && rec->payload_len > 0) {
+        memcpy(payload_dst, rec->payload, rec->payload_len);
+    }
+
+    slot->wal_seq = rec->wal_seq;
+    slot->wal_type = rec->wal_type;
+    slot->reserved = 0;
+    slot->payload_len = rec->payload_len;
+    slot->crc32 = (stream->flags & OM_BUS_FLAG_CRC)
+        ? _om_bus_crc32(rec->payload, rec->payload_len) : 0;
+
+    atomic_store_explicit(&slot->seq, pos + 1U, memory_order_release);
+}
 
 int om_bus_stream_create(OmBusStream **out, const OmBusStreamConfig *config) {
     if (!out || !config || !config->stream_name) {
@@ -257,6 +277,7 @@ int om_bus_stream_create(OmBusStream **out, const OmBusStreamConfig *config) {
     atomic_init(&hdr->head, 0U);
     atomic_init(&hdr->min_tail, 0U);
     atomic_init(&hdr->producer_epoch, _om_bus_monotonic_ns());
+    hdr->staleness_ns = config->staleness_ns;
     strncpy(hdr->stream_name, config->stream_name, sizeof(hdr->stream_name) - 1);
     hdr->stream_name[sizeof(hdr->stream_name) - 1] = '\0';
 
@@ -314,53 +335,37 @@ int om_bus_stream_publish(OmBusStream *stream, uint64_t wal_seq,
      * Phase 1: 10 iterations  — cpu_relax()      (~100ns)
      * Phase 2: 32 iterations  — cpu_relax()      (~300ns)
      * Phase 3: sched_yield()  + callback          (~50-100us) */
-    uint32_t pressure_spins = 0;
-    while (1) {
-        uint64_t mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
-        if ((head - mt) < stream->capacity) break;
-        if ((pressure_spins & 31U) == 0U) {
-            mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
-                                        stream->staleness_ns);
-            atomic_store_explicit(&stream->hdr->min_tail, mt, memory_order_release);
-        }
-        if (pressure_spins < 10) {
-            _om_bus_cpu_relax();
-        } else if (pressure_spins < 42) {
-            _om_bus_cpu_relax();
-        } else {
-            if (pressure_spins == 42 && stream->backpressure_cb) {
-                stream->backpressure_cb(head, mt, stream->backpressure_ctx);
+    if (!_om_bus_is_broadcast(stream->flags)) {
+        uint32_t pressure_spins = 0;
+        while (1) {
+            uint64_t mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
+            if ((head - mt) < stream->capacity) break;
+            if ((pressure_spins & 31U) == 0U) {
+                mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
+                                            stream->staleness_ns, head);
+                atomic_store_explicit(&stream->hdr->min_tail, mt, memory_order_release);
             }
-            sched_yield();
+            if (pressure_spins < 10) {
+                _om_bus_cpu_relax();
+            } else if (pressure_spins < 42) {
+                _om_bus_cpu_relax();
+            } else {
+                if (pressure_spins == 42 && stream->backpressure_cb) {
+                    stream->backpressure_cb(head, mt, stream->backpressure_ctx);
+                }
+                sched_yield();
+            }
+            pressure_spins++;
         }
-        pressure_spins++;
     }
 
-    uint64_t idx = head & stream->mask;
-    OmBusSlotHeader *slot = (OmBusSlotHeader *)_om_bus_slot(
-        stream->map, stream->max_consumers, stream->slot_size, idx);
-
-    /* Backpressure above guarantees head - min_tail < capacity, so this
-     * slot has been consumed by all consumers and is safe to overwrite.
-     * No slot-level seq spin needed (single producer). */
-
-    /* Copy payload into slot */
-    char *payload_dst = (char *)slot + OM_BUS_SLOT_HEADER_SIZE;
-    if (payload && len > 0) {
-        memcpy(payload_dst, payload, len);
-    }
-
-    /* Fill non-atomic header fields */
-    slot->wal_seq = wal_seq;
-    slot->wal_type = wal_type;
-    slot->reserved = 0;
-    slot->payload_len = len;
-    slot->crc32 = (stream->flags & OM_BUS_FLAG_CRC) ? _om_bus_crc32(payload, len) : 0;
-
-    /* Publish fence: make payload visible before seq update */
-    atomic_store_explicit(&slot->seq, head + 1U, memory_order_release);
-
-    /* Advance head */
+    OmBusRecord rec = {
+        .wal_seq = wal_seq,
+        .wal_type = wal_type,
+        .payload_len = len,
+        .payload = payload,
+    };
+    _om_bus_publish_slot(stream, head, &rec);
     atomic_store_explicit(&stream->hdr->head, head + 1U, memory_order_release);
     stream->records_published++;
 
@@ -383,53 +388,39 @@ int om_bus_stream_publish_batch(OmBusStream *stream, const OmBusRecord *recs,
     while (i < count) {
         uint64_t mt = 0;
         uint32_t pressure_spins = 0;
-        while (1) {
-            mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
-            if ((head - mt) < stream->capacity) break;
-            if ((pressure_spins & 31U) == 0U) {
-                mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
-                                            stream->staleness_ns);
-                atomic_store_explicit(&stream->hdr->min_tail, mt,
-                                      memory_order_release);
-            }
-            if (pressure_spins < 10) {
-                _om_bus_cpu_relax();
-            } else if (pressure_spins < 42) {
-                _om_bus_cpu_relax();
-            } else {
-                if (pressure_spins == 42 && stream->backpressure_cb) {
-                    stream->backpressure_cb(head, mt, stream->backpressure_ctx);
+        if (!_om_bus_is_broadcast(stream->flags)) {
+            while (1) {
+                mt = atomic_load_explicit(&stream->hdr->min_tail, memory_order_acquire);
+                if ((head - mt) < stream->capacity) break;
+                if ((pressure_spins & 31U) == 0U) {
+                    mt = _om_bus_min_tail_live(stream->tails, stream->max_consumers,
+                                                stream->staleness_ns, head);
+                    atomic_store_explicit(&stream->hdr->min_tail, mt,
+                                          memory_order_release);
                 }
-                sched_yield();
+                if (pressure_spins < 10) {
+                    _om_bus_cpu_relax();
+                } else if (pressure_spins < 42) {
+                    _om_bus_cpu_relax();
+                } else {
+                    if (pressure_spins == 42 && stream->backpressure_cb) {
+                        stream->backpressure_cb(head, mt, stream->backpressure_ctx);
+                    }
+                    sched_yield();
+                }
+                pressure_spins++;
             }
-            pressure_spins++;
         }
 
-        uint64_t available = stream->capacity - (head - mt);
+        uint64_t available = _om_bus_is_broadcast(stream->flags)
+            ? (uint64_t)(count - i) : stream->capacity - (head - mt);
         uint32_t chunk = count - i;
         if ((uint64_t)chunk > available) {
             chunk = (uint32_t)available;
         }
 
         for (uint32_t j = 0; j < chunk; j++) {
-            uint64_t idx = head & stream->mask;
-            OmBusSlotHeader *slot = (OmBusSlotHeader *)_om_bus_slot(
-                stream->map, stream->max_consumers, stream->slot_size, idx);
-            const OmBusRecord *rec = &recs[i + j];
-
-            char *payload_dst = (char *)slot + OM_BUS_SLOT_HEADER_SIZE;
-            if (rec->payload && rec->payload_len > 0) {
-                memcpy(payload_dst, rec->payload, rec->payload_len);
-            }
-
-            slot->wal_seq = rec->wal_seq;
-            slot->wal_type = rec->wal_type;
-            slot->reserved = 0;
-            slot->payload_len = rec->payload_len;
-            slot->crc32 = (stream->flags & OM_BUS_FLAG_CRC)
-                ? _om_bus_crc32(rec->payload, rec->payload_len) : 0;
-
-            atomic_store_explicit(&slot->seq, head + 1U, memory_order_release);
+            _om_bus_publish_slot(stream, head, &recs[i + j]);
             head++;
         }
 
@@ -519,6 +510,10 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
         munmap(map, total);
         return OM_ERR_BUS_CONSUMER_ID;
     }
+    if ((hdr->flags & OM_BUS_FLAG_BROADCAST) && config->zero_copy) {
+        munmap(map, total);
+        return OM_ERR_BUS_INIT;
+    }
 
     OmBusEndpoint *ep = calloc(1, sizeof(*ep));
     if (!ep) {
@@ -556,9 +551,43 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
                           cur_head, memory_order_release);
     atomic_store_explicit(&ep->tails[config->consumer_index].wal_seq,
                           0U, memory_order_release);
+    atomic_store_explicit(&ep->tails[config->consumer_index].last_poll_ns,
+                          _om_bus_monotonic_ns(), memory_order_relaxed);
 
     *out = ep;
     return 0;
+}
+
+static int _om_bus_gap_result(OmBusEndpoint *ep, uint64_t wal_seq) {
+    int result = 1;
+    if (ep->expected_wal_seq > 0 && wal_seq != ep->expected_wal_seq) {
+        if (wal_seq > ep->expected_wal_seq) {
+            result = OM_ERR_BUS_GAP_DETECTED;
+        } else if (ep->flags & OM_BUS_FLAG_REJECT_REORDER) {
+            result = OM_ERR_BUS_REORDER_DETECTED;
+        }
+    }
+    ep->expected_wal_seq = wal_seq + 1U;
+    return result;
+}
+
+static void _om_bus_endpoint_advance(OmBusEndpoint *ep, uint64_t old_tail,
+                                      uint64_t new_tail, uint64_t wal_seq) {
+    atomic_store_explicit(&ep->tails[ep->consumer_index].tail,
+                          new_tail, memory_order_release);
+    atomic_store_explicit(&ep->tails[ep->consumer_index].wal_seq,
+                          wal_seq, memory_order_release);
+    atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,
+                          _om_bus_monotonic_ns(), memory_order_relaxed);
+
+    if (_om_bus_is_broadcast(ep->flags)) return;
+
+    uint64_t cached_min = atomic_load_explicit(&ep->hdr->min_tail, memory_order_acquire);
+    if (old_tail == cached_min || new_tail < cached_min) {
+        uint64_t mt = _om_bus_min_tail_live(ep->tails, ep->max_consumers,
+                                            ep->hdr->staleness_ns, new_tail);
+        atomic_store_explicit(&ep->hdr->min_tail, mt, memory_order_release);
+    }
 }
 
 int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec) {
@@ -576,61 +605,51 @@ int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec) {
     OmBusSlotHeader *slot = (OmBusSlotHeader *)_om_bus_slot(
         ep->map, ep->max_consumers, ep->slot_size, idx);
 
-    /* Check if slot is ready */
-    if (atomic_load_explicit(&slot->seq, memory_order_acquire) != tail + 1U) {
-        return 0; /* empty */
+    uint64_t want_seq = tail + 1U;
+    uint64_t seq = atomic_load_explicit(&slot->seq, memory_order_acquire);
+    if (_om_bus_is_broadcast(ep->flags)) {
+        if (seq == 0U || seq < want_seq) return 0;
+        if (seq > want_seq) return OM_ERR_BUS_LAPPED;
+    } else if (seq != want_seq) {
+        return 0;
     }
 
     /* Read header fields */
-    rec->wal_seq = slot->wal_seq;
-    rec->wal_type = slot->wal_type;
-    rec->payload_len = slot->payload_len;
+    uint64_t wal_seq = slot->wal_seq;
+    uint8_t wal_type = slot->wal_type;
+    uint16_t payload_len = slot->payload_len;
+    uint32_t crc32 = slot->crc32;
 
     const void *payload_src = (const char *)slot + OM_BUS_SLOT_HEADER_SIZE;
-
-    /* CRC check */
-    if (ep->flags & OM_BUS_FLAG_CRC) {
-        uint32_t computed = _om_bus_crc32(payload_src, slot->payload_len);
-        if (computed != slot->crc32) {
-            return OM_ERR_BUS_CRC_MISMATCH;
-        }
-    }
 
     /* Deliver payload */
     if (ep->zero_copy) {
         rec->payload = payload_src;
     } else {
-        memcpy(ep->copy_buf, payload_src, slot->payload_len);
+        memcpy(ep->copy_buf, payload_src, payload_len);
         rec->payload = ep->copy_buf;
     }
 
-    /* Gap / reorder detection */
-    int result = 1;
-    if (ep->expected_wal_seq > 0 && rec->wal_seq != ep->expected_wal_seq) {
-        if (rec->wal_seq > ep->expected_wal_seq) {
-            result = OM_ERR_BUS_GAP_DETECTED;
-        } else if (ep->flags & OM_BUS_FLAG_REJECT_REORDER) {
-            result = OM_ERR_BUS_REORDER_DETECTED;
+    if (_om_bus_is_broadcast(ep->flags)) {
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&slot->seq, memory_order_acquire) != seq) {
+            return OM_ERR_BUS_LAPPED;
         }
     }
-    ep->expected_wal_seq = rec->wal_seq + 1;
+
+    if (ep->flags & OM_BUS_FLAG_CRC) {
+        uint32_t computed = _om_bus_crc32(rec->payload, payload_len);
+        if (computed != crc32) return OM_ERR_BUS_CRC_MISMATCH;
+    }
+
+    rec->wal_seq = wal_seq;
+    rec->wal_type = wal_type;
+    rec->payload_len = payload_len;
+
+    int result = _om_bus_gap_result(ep, rec->wal_seq);
 
     /* Advance tail */
-    uint64_t prev_tail = tail;
-    uint64_t new_tail = tail + 1U;
-    atomic_store_explicit(&ep->tails[ep->consumer_index].tail,
-                          new_tail, memory_order_release);
-    atomic_store_explicit(&ep->tails[ep->consumer_index].wal_seq,
-                          rec->wal_seq, memory_order_release);
-    atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,
-                          _om_bus_monotonic_ns(), memory_order_relaxed);
-
-    /* Refresh min_tail if we were the minimum */
-    uint64_t cached_min = atomic_load_explicit(&ep->hdr->min_tail, memory_order_acquire);
-    if (prev_tail == cached_min || new_tail < cached_min) {
-        uint64_t mt = _om_bus_min_tail(ep->tails, ep->max_consumers);
-        atomic_store_explicit(&ep->hdr->min_tail, mt, memory_order_release);
-    }
+    _om_bus_endpoint_advance(ep, tail, tail + 1U, rec->wal_seq);
 
     return result;
 }
@@ -639,6 +658,7 @@ int om_bus_endpoint_poll_batch(OmBusEndpoint *ep, OmBusRecord *recs,
                                size_t max_count) {
     if (!ep || !recs) return OM_ERR_BUS_INIT;
     if (max_count == 0) return 0;
+    if (_om_bus_is_broadcast(ep->flags) && max_count > 1) max_count = 1;
 
     /* Epoch check */
     uint64_t epoch = atomic_load_explicit(&ep->hdr->producer_epoch,
@@ -655,55 +675,74 @@ int om_bus_endpoint_poll_batch(OmBusEndpoint *ep, OmBusRecord *recs,
         OmBusSlotHeader *slot = (OmBusSlotHeader *)_om_bus_slot(
             ep->map, ep->max_consumers, ep->slot_size, idx);
 
-        if (atomic_load_explicit(&slot->seq, memory_order_acquire) != tail + count + 1U) {
+        uint64_t want_seq = tail + count + 1U;
+        uint64_t seq = atomic_load_explicit(&slot->seq, memory_order_acquire);
+        if (_om_bus_is_broadcast(ep->flags)) {
+            if (seq == 0U || seq < want_seq) break;
+            if (seq > want_seq) {
+                if (count == 0) return OM_ERR_BUS_LAPPED;
+                break;
+            }
+        } else if (seq != want_seq) {
             break;
         }
 
-        recs[count].wal_seq = slot->wal_seq;
-        recs[count].wal_type = slot->wal_type;
-        recs[count].payload_len = slot->payload_len;
+        uint64_t wal_seq = slot->wal_seq;
+        uint8_t wal_type = slot->wal_type;
+        uint16_t payload_len = slot->payload_len;
+        uint32_t crc32 = slot->crc32;
 
         const void *payload_src = (const char *)slot + OM_BUS_SLOT_HEADER_SIZE;
 
-        if (ep->flags & OM_BUS_FLAG_CRC) {
-            uint32_t computed = _om_bus_crc32(payload_src, slot->payload_len);
-            if (computed != slot->crc32) {
-                break; /* stop batch on CRC error */
+        if (_om_bus_is_broadcast(ep->flags)) {
+            memcpy(ep->copy_buf, payload_src, payload_len);
+            atomic_thread_fence(memory_order_acquire);
+            if (atomic_load_explicit(&slot->seq, memory_order_acquire) != seq) {
+                if (count == 0) return OM_ERR_BUS_LAPPED;
+                break;
+            }
+            if (ep->flags & OM_BUS_FLAG_CRC) {
+                uint32_t computed = _om_bus_crc32(ep->copy_buf, payload_len);
+                if (computed != crc32) break;
+            }
+            recs[count].payload = ep->copy_buf;
+        } else {
+            if (ep->flags & OM_BUS_FLAG_CRC) {
+                uint32_t computed = _om_bus_crc32(payload_src, payload_len);
+                if (computed != crc32) break;
+            }
+            if (ep->zero_copy) {
+                recs[count].payload = payload_src;
+            } else {
+                /* For non-broadcast batch, preserve existing zero-copy-like semantics. */
+                recs[count].payload = payload_src;
             }
         }
 
-        if (ep->zero_copy) {
-            recs[count].payload = payload_src;
-        } else {
-            /* For batch, each record needs its own copy area.
-             * We only have one copy buffer, so batch forces zero_copy semantics
-             * for the payload pointer (points into mmap). Caller must process
-             * before the producer wraps. */
-            recs[count].payload = payload_src;
-        }
-
+        recs[count].wal_seq = wal_seq;
+        recs[count].wal_type = wal_type;
+        recs[count].payload_len = payload_len;
         count++;
     }
 
     if (count > 0) {
-        uint64_t prev_tail = tail;
         uint64_t new_tail = tail + count;
         ep->expected_wal_seq = recs[count - 1].wal_seq + 1U;
-        atomic_store_explicit(&ep->tails[ep->consumer_index].tail,
-                              new_tail, memory_order_release);
-        atomic_store_explicit(&ep->tails[ep->consumer_index].wal_seq,
-                              recs[count - 1].wal_seq, memory_order_release);
-        atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,
-                              _om_bus_monotonic_ns(), memory_order_relaxed);
-
-        uint64_t cached_min = atomic_load_explicit(&ep->hdr->min_tail, memory_order_acquire);
-        if (prev_tail == cached_min || new_tail < cached_min) {
-            uint64_t mt = _om_bus_min_tail(ep->tails, ep->max_consumers);
-            atomic_store_explicit(&ep->hdr->min_tail, mt, memory_order_release);
-        }
+        _om_bus_endpoint_advance(ep, tail, new_tail, recs[count - 1].wal_seq);
     }
 
     return (int)count;
+}
+
+int om_bus_endpoint_seek_head(OmBusEndpoint *ep) {
+    if (!ep) return OM_ERR_BUS_INIT;
+
+    uint64_t head = atomic_load_explicit(&ep->hdr->head, memory_order_acquire);
+    atomic_store_explicit(&ep->tails[ep->consumer_index].tail,
+                          head, memory_order_release);
+    atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,
+                          _om_bus_monotonic_ns(), memory_order_relaxed);
+    return 0;
 }
 
 uint64_t om_bus_endpoint_wal_seq(const OmBusEndpoint *ep) {
@@ -714,6 +753,8 @@ uint64_t om_bus_endpoint_wal_seq(const OmBusEndpoint *ep) {
 
 void om_bus_endpoint_close(OmBusEndpoint *ep) {
     if (!ep) return;
+    atomic_store_explicit(&ep->tails[ep->consumer_index].last_poll_ns,
+                          0U, memory_order_release);
     free(ep->copy_buf);
     if (ep->map && ep->map != MAP_FAILED) {
         munmap(ep->map, ep->map_size);
