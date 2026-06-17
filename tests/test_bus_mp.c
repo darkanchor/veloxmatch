@@ -254,6 +254,102 @@ START_TEST(test_bus_mp_concurrent_producers) {
 }
 END_TEST
 
+START_TEST(test_bus_mp_poll_batch_drains_in_order) {
+    OmBusMpConfig cfg = {
+        .capacity = 16,
+        .slot_size = 64,
+        .max_producers = 1,
+    };
+    void *memory = bus_mp_alloc(&cfg, NULL);
+
+    OmBusMpProducer producer;
+    OmBusMpConsumer consumer;
+    ck_assert_int_eq(om_bus_mp_producer_open(&producer, memory, 0), 0);
+    ck_assert_int_eq(om_bus_mp_consumer_open(&consumer, memory), 0);
+
+    /* Empty queue: batch returns 0, bad args return error. */
+    OmBusMpRecord recs[8];
+    ck_assert_int_eq(om_bus_mp_poll_batch(&consumer, recs, 8), 0);
+    ck_assert_int_eq(om_bus_mp_poll_batch(NULL, recs, 8), OM_BUS_MP_ERR_INIT);
+    ck_assert_int_eq(om_bus_mp_poll_batch(&consumer, NULL, 8), OM_BUS_MP_ERR_INIT);
+    ck_assert_int_eq(om_bus_mp_poll_batch(&consumer, recs, 0), 0);
+
+    const uint32_t total = 5;
+    for (uint32_t i = 0; i < total; i++) {
+        ck_assert_int_eq(om_bus_mp_publish(&producer, &i, sizeof(i), NULL), 0);
+    }
+    ck_assert_uint_eq(om_bus_mp_pending(&consumer), total);
+
+    /* Bounded batch: ask for 3, get 3 in queue order. */
+    int got = om_bus_mp_poll_batch(&consumer, recs, 3);
+    ck_assert_int_eq(got, 3);
+    for (uint32_t i = 0; i < 3; i++) {
+        ck_assert_uint_eq(recs[i].sequence, i);
+        ck_assert_uint_eq(recs[i].producer_id, 0);
+        ck_assert_uint_eq(recs[i].payload_len, sizeof(uint32_t));
+        ck_assert_int_eq(memcmp(recs[i].payload, &i, sizeof(uint32_t)), 0);
+    }
+    ck_assert_uint_eq(om_bus_mp_pending(&consumer), total - 3);
+
+    /* Drain the rest: ask for more than remain, get exactly what's left. */
+    got = om_bus_mp_poll_batch(&consumer, recs, 8);
+    ck_assert_int_eq(got, 2);
+    ck_assert_uint_eq(recs[0].sequence, 3);
+    ck_assert_uint_eq(recs[1].sequence, 4);
+    ck_assert_uint_eq(om_bus_mp_pending(&consumer), 0);
+    ck_assert_int_eq(om_bus_mp_poll_batch(&consumer, recs, 8), 0);
+
+    /* A single poll after a full drain still sees an empty queue (cursor state
+     * stayed consistent across the batch path). */
+    OmBusMpRecord one;
+    ck_assert_int_eq(om_bus_mp_poll(&consumer, &one), OM_BUS_MP_POLL_EMPTY);
+
+    free(memory);
+}
+END_TEST
+
+START_TEST(test_bus_mp_poll_batch_stops_at_uncommitted_gap) {
+    OmBusMpConfig cfg = {
+        .capacity = 8,
+        .slot_size = 64,
+        .max_producers = 1,
+        .skip_timeout_ns = 1000,
+    };
+    void *memory = bus_mp_alloc(&cfg, NULL);
+
+    OmBusMpProducer producer;
+    OmBusMpConsumer consumer;
+    ck_assert_int_eq(om_bus_mp_producer_open(&producer, memory, 0), 0);
+    ck_assert_int_eq(om_bus_mp_consumer_open(&consumer, memory), 0);
+
+    /* Two committed records, then a claimed-but-uncommitted slot. */
+    uint32_t a = 10, b = 20;
+    ck_assert_int_eq(om_bus_mp_publish(&producer, &a, sizeof(a), NULL), 0);
+    ck_assert_int_eq(om_bus_mp_publish(&producer, &b, sizeof(b), NULL), 0);
+    OmBusMpClaim claim;
+    ck_assert_int_eq(om_bus_mp_claim(&producer, sizeof(uint32_t), &claim), 0);
+
+    /* Batch drains the two ready records and stops at the gap — it must NOT
+     * perform skip-timeout recovery. */
+    OmBusMpRecord recs[8];
+    int got = om_bus_mp_poll_batch(&consumer, recs, 8);
+    ck_assert_int_eq(got, 2);
+    ck_assert_uint_eq(recs[0].sequence, 0);
+    ck_assert_uint_eq(recs[1].sequence, 1);
+
+    /* Still stuck at the gap until the single poll applies the skip timeout. */
+    ck_assert_int_eq(om_bus_mp_poll_batch(&consumer, recs, 8), 0);
+    OmBusMpRecord one;
+    ck_assert_int_eq(om_bus_mp_poll(&consumer, &one), OM_BUS_MP_POLL_EMPTY);
+    usleep(1000);
+    ck_assert_int_eq(om_bus_mp_poll(&consumer, &one), OM_BUS_MP_POLL_SKIPPED);
+
+    ck_assert_int_eq(om_bus_mp_commit(&producer, &claim), OM_BUS_MP_ERR_SLOT_POISONED);
+
+    free(memory);
+}
+END_TEST
+
 Suite *bus_mp_suite(void) {
     Suite *s = suite_create("BusMP");
     TCase *tc = tcase_create("MPSC");
@@ -264,6 +360,8 @@ Suite *bus_mp_suite(void) {
     tcase_add_test(tc, test_bus_mp_claim_commit);
     tcase_add_test(tc, test_bus_mp_poison_unpublished_claim);
     tcase_add_test(tc, test_bus_mp_concurrent_producers);
+    tcase_add_test(tc, test_bus_mp_poll_batch_drains_in_order);
+    tcase_add_test(tc, test_bus_mp_poll_batch_stops_at_uncommitted_gap);
     suite_add_tcase(s, tc);
     return s;
 }

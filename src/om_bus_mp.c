@@ -104,6 +104,17 @@ static inline OmBusMpSlot *_om_bus_mp_slot(void *slots, uint32_t slot_size, uint
     return (OmBusMpSlot *)((char *)slots + idx * slot_size);
 }
 
+/* Hint the CPU to pull a slot's cacheline ahead of use. Mainly helps when
+ * draining a backlog whose slots have fallen out of cache; a no-op where the
+ * builtin is unavailable. */
+static inline void _om_bus_mp_prefetch(const void *p) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(p, 0 /* read */, 3 /* high temporal locality */);
+#else
+    (void)p;
+#endif
+}
+
 static int _om_bus_mp_validate_config(const OmBusMpConfig *config) {
     if (!config) return OM_BUS_MP_ERR_INIT;
     if (!_om_bus_mp_is_power_of_two(config->capacity)) return OM_BUS_MP_ERR_NOT_POW2;
@@ -355,6 +366,63 @@ int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record) {
     }
 
     return OM_BUS_MP_POLL_EMPTY;
+}
+
+int om_bus_mp_poll_batch(OmBusMpConsumer *consumer, OmBusMpRecord *records,
+                         uint32_t max_records) {
+    if (!consumer || !records) return OM_BUS_MP_ERR_INIT;
+    if (max_records == 0U) return 0;
+
+    OmBusMpHeader *hdr = (OmBusMpHeader *)consumer->base;
+    uint64_t pos = atomic_load_explicit(&hdr->consumer_cursor.dequeue_pos,
+                                        memory_order_relaxed);
+    uint32_t n = 0;
+
+    while (n < max_records) {
+        OmBusMpSlot *slot = _om_bus_mp_slot(consumer->slots, consumer->slot_size,
+                                            pos & consumer->mask);
+        uint64_t seq = atomic_load_explicit(&slot->seq, memory_order_acquire);
+        /* Stop at the first slot that is not a committed record. Skip-timeout
+         * recovery for a stuck producer is intentionally left to
+         * om_bus_mp_poll() so the time-based logic lives in one place. */
+        if (seq != pos + 1U) break;
+
+        /* Warm the next slot's cacheline while we copy this one. */
+        _om_bus_mp_prefetch(_om_bus_mp_slot(consumer->slots, consumer->slot_size,
+                                            (pos + 1U) & consumer->mask));
+
+        OmBusMpRecord *rec = &records[n];
+        rec->sequence = slot->sequence;
+        rec->producer_id = slot->producer_id;
+        rec->payload_len = slot->payload_len;
+        rec->payload = (const char *)slot + OM_BUS_MP_SLOT_HEADER_SIZE;
+
+        /* Release the slot for producer reuse, then advance the cursor. Both
+         * stores happen per record so crash semantics match om_bus_mp_poll():
+         * the consumed/dequeue window is never wider than a single slot. */
+        atomic_store_explicit(&slot->seq, pos + consumer->capacity,
+                              memory_order_release);
+        pos += 1U;
+        atomic_store_explicit(&hdr->consumer_cursor.dequeue_pos, pos,
+                              memory_order_release);
+        n++;
+    }
+
+    if (n > 0U) {
+        consumer->blocked_sequence = UINT64_MAX;
+        consumer->blocked_since_ns = 0;
+    }
+    return (int)n;
+}
+
+uint64_t om_bus_mp_pending(const OmBusMpConsumer *consumer) {
+    if (!consumer || !consumer->base) return 0;
+    const OmBusMpHeader *hdr = (const OmBusMpHeader *)consumer->base;
+    uint64_t enq = atomic_load_explicit(&hdr->producer_cursor.enqueue_pos,
+                                        memory_order_acquire);
+    uint64_t deq = atomic_load_explicit(&hdr->consumer_cursor.dequeue_pos,
+                                        memory_order_relaxed);
+    return (enq > deq) ? (enq - deq) : 0U;
 }
 
 void om_bus_mp_stats(const void *memory, OmBusMpStats *out) {

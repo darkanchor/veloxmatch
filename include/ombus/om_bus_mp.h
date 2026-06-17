@@ -106,6 +106,37 @@ int om_bus_mp_publish(OmBusMpProducer *producer, const void *payload,
                       uint16_t payload_len, uint64_t *sequence_out);
 int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record);
 
+/**
+ * Drain up to max_records ready records into the caller's array in one call.
+ *
+ * Semantically equivalent to calling om_bus_mp_poll() repeatedly while it
+ * returns OM_BUS_MP_POLL_RECORD, but amortizes the call overhead, tracks the
+ * consumer cursor locally, and prefetches the next slot. Intended for the
+ * single-consumer drain loop of a latency-sensitive poller (e.g. a matcher).
+ *
+ * Stops at the first non-ready slot and does NOT perform the skip-timeout
+ * recovery that om_bus_mp_poll() does for a stuck/uncommitted producer slot.
+ * If a batch returns fewer records than requested and the queue still appears
+ * non-empty (see om_bus_mp_pending), call om_bus_mp_poll() once to advance the
+ * skip logic.
+ *
+ * Returns the number of records filled (0..max_records), or a negative
+ * OmBusMpError for invalid arguments. As with om_bus_mp_poll(), each record's
+ * payload points into the ring and is valid until the slot is reused; since
+ * consumed slots are released for producer reuse immediately, max_records must
+ * be far smaller than the ring capacity (always true in practice).
+ */
+int om_bus_mp_poll_batch(OmBusMpConsumer *consumer, OmBusMpRecord *records,
+                         uint32_t max_records);
+
+/**
+ * Approximate number of records pending for the consumer: enqueue_pos minus
+ * dequeue_pos. Cheap (two atomic loads) for use as a queue-lag/depth gauge.
+ * Upper bound: it includes slots a producer has claimed but not yet committed.
+ * Returns 0 if consumer is NULL/unopened.
+ */
+uint64_t om_bus_mp_pending(const OmBusMpConsumer *consumer);
+
 void om_bus_mp_stats(const void *memory, OmBusMpStats *out);
 uint64_t om_bus_mp_producer_published(const void *memory, uint32_t producer_id);
 
