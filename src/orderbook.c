@@ -945,7 +945,11 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
 
     if (replay_status < 0) {
         om_wal_replay_close(&replay);
-        return OM_ERR_RECOVERY_FAILED;
+        /* Propagate the specific failure (e.g. OM_ERR_WAL_TRUNCATED for a torn
+         * tail vs OM_ERR_WAL_CRC_MISMATCH for corruption) so callers can treat a
+         * benign crash-truncated tail differently from real corruption. Still a
+         * negative value, so existing sign-based success checks are unaffected. */
+        return replay_status;
     }
 
     om_wal_replay_close(&replay);
