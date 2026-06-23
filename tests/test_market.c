@@ -1779,6 +1779,99 @@ START_TEST(test_market_slab_growth) {
 }
 END_TEST
 
+/* The dirty work-list must be an exact, duplicate-free view of the per-ladder
+ * dirty flags: a flush walks the list instead of probing is_dirty for every
+ * subscription, so the two must never disagree. */
+START_TEST(test_market_dirty_worklist) {
+    OmMarket market;
+    uint32_t org_to_worker[UINT16_MAX + 1U];
+    for (uint32_t i = 0; i <= UINT16_MAX; i++) org_to_worker[i] = 0;
+    uint32_t product_to_public[8] = {0};
+    OmMarketSubscription subs[4] = {
+        {.org_id = 1, .product_id = 0},
+        {.org_id = 2, .product_id = 0},
+        {.org_id = 1, .product_id = 1},
+        {.org_id = 3, .product_id = 2},
+    };
+    OmMarketConfig cfg = {
+        .max_products = 8,
+        .worker_count = 1,
+        .public_worker_count = 1,
+        .org_to_worker = org_to_worker,
+        .product_to_public_worker = product_to_public,
+        .subs = subs,
+        .sub_count = 4,
+        .expected_orders_per_worker = 8,
+        .expected_subscribers_per_product = 2,
+        .expected_price_levels = 4,
+        .top_levels = 4,
+        .dealable = test_marketable,
+        .dealable_ctx = NULL,
+    };
+    ck_assert_int_eq(om_market_init(&market, &cfg), 0);
+    OmMarketWorker *w = om_market_worker(&market, 0);
+    OmMarketPublicWorker *pw = &market.public_workers[0];
+
+    /* Nothing touched yet: both lists empty. */
+    ck_assert_uint_eq(om_market_worker_dirty_count(w), 0);
+    ck_assert_uint_eq(om_market_public_dirty_count(pw), 0);
+
+    /* One insert on product 0 fans out to both subscribed orgs (1 and 2). */
+    OmWalInsert ins0 = {.order_id = 1, .price = 10, .volume = 5, .vol_remain = 5,
+                        .org = 9, .flags = OM_SIDE_BID, .product_id = 0};
+    ck_assert_int_eq(om_market_worker_process(w, OM_WAL_INSERT, &ins0), 0);
+    ck_assert_int_eq(om_market_public_process(pw, OM_WAL_INSERT, &ins0), 0);
+
+    /* A second insert on product 0 must NOT re-list the same ladders (dedup by
+     * the clean->dirty edge). */
+    OmWalInsert ins0b = {.order_id = 2, .price = 11, .volume = 7, .vol_remain = 7,
+                         .org = 9, .flags = OM_SIDE_BID, .product_id = 0};
+    ck_assert_int_eq(om_market_worker_process(w, OM_WAL_INSERT, &ins0b), 0);
+    ck_assert_int_eq(om_market_public_process(pw, OM_WAL_INSERT, &ins0b), 0);
+
+    /* Private: ladders (1,0) and (2,0) are dirty => exactly 2 entries, no dupes. */
+    ck_assert_uint_eq(om_market_worker_dirty_count(w), 2);
+    for (uint32_t i = 0; i < om_market_worker_dirty_count(w); i++) {
+        uint16_t org = 0, prod = 0;
+        ck_assert_int_eq(om_market_worker_dirty_at(w, i, &org, &prod), 0);
+        ck_assert_uint_eq(prod, 0);
+        ck_assert(org == 1 || org == 2);
+        ck_assert_int_eq(om_market_worker_is_dirty(w, org, prod), 1);
+    }
+    /* Public: only product 0 dirty. */
+    ck_assert_uint_eq(om_market_public_dirty_count(pw), 1);
+    uint16_t pprod = 0xffff;
+    ck_assert_int_eq(om_market_public_dirty_at(pw, 0, &pprod), 0);
+    ck_assert_uint_eq(pprod, 0);
+
+    /* Clearing a flag does not remove the entry; compaction does. */
+    ck_assert_int_eq(om_market_worker_clear_dirty(w, 1, 0), 0);
+    ck_assert_uint_eq(om_market_worker_dirty_count(w), 2);   /* stale entry still listed */
+    om_market_worker_compact_dirty(w);
+    ck_assert_uint_eq(om_market_worker_dirty_count(w), 1);   /* (1,0) dropped */
+    uint16_t org = 0, prod = 0;
+    ck_assert_int_eq(om_market_worker_dirty_at(w, 0, &org, &prod), 0);
+    ck_assert_uint_eq(org, 2);
+    ck_assert_uint_eq(prod, 0);
+
+    /* Re-dirtying (1,0) re-lists it exactly once. */
+    OmWalInsert ins0c = {.order_id = 3, .price = 12, .volume = 1, .vol_remain = 1,
+                         .org = 9, .flags = OM_SIDE_BID, .product_id = 0};
+    ck_assert_int_eq(om_market_worker_process(w, OM_WAL_INSERT, &ins0c), 0);
+    ck_assert_uint_eq(om_market_worker_dirty_count(w), 2);
+
+    /* Public compaction parity. */
+    ck_assert_int_eq(om_market_public_clear_dirty(pw, 0), 0);
+    om_market_public_compact_dirty(pw);
+    ck_assert_uint_eq(om_market_public_dirty_count(pw), 0);
+
+    /* Out-of-range index is rejected. */
+    ck_assert_int_ne(om_market_worker_dirty_at(w, 999, &org, &prod), 0);
+
+    om_market_destroy(&market);
+}
+END_TEST
+
 Suite* market_suite(void) {
     Suite *s = suite_create("Market");
     TCase *tc_core = tcase_create("core");
@@ -1810,6 +1903,7 @@ Suite* market_suite(void) {
     tcase_add_test(tc_core, test_market_multi_worker_sharding);
     tcase_add_test(tc_core, test_market_delta_copy_truncation_and_side_isolation);
     tcase_add_test(tc_core, test_private_copy_full_mixed_ownership_match_cancel);
+    tcase_add_test(tc_core, test_market_dirty_worklist);
 
     suite_add_tcase(s, tc_core);
     return s;

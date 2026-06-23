@@ -148,6 +148,14 @@ typedef struct OmMarketWorker {
     uint8_t *ladder_dirty;          /**< 64-byte aligned dirty flags */
     khash_t(om_market_delta_map) **ladder_deltas;
     khash_t(om_market_pair_map) *pair_to_ladder;
+    /* Dirty work-list: the indices of ladders marked dirty since the last
+     * compaction, so a flush walks O(dirty) instead of O(subscription_count).
+     * `ladder_org`/`ladder_product` are the reverse of the (org,product)->ladder
+     * map, letting a flush recover a dirty ladder's keys without a hash probe. */
+    uint32_t *dirty_list;           /**< ladder indices pending publish (cap subscription_count) */
+    uint32_t dirty_count;           /**< live entries in dirty_list */
+    uint16_t *ladder_org;           /**< ladder idx -> org_id */
+    uint16_t *ladder_product;       /**< ladder idx -> product_id */
     OmMarketDealableFn dealable;
     void *dealable_ctx;
 } OmMarketWorker;
@@ -163,6 +171,8 @@ typedef struct OmMarketPublicWorker {
     OmMarketLevelSlab slab;         /**< Worker-owned slab for price level slots */
     OmMarketLadder *ladders;        /**< Per-product ladders (Q1 queue heads) */
     uint8_t *dirty;                 /**< 64-byte aligned dirty flags */
+    uint16_t *dirty_list;           /**< product ids pending publish (cap max_products) */
+    uint32_t dirty_count;           /**< live entries in dirty_list */
     khash_t(om_market_delta_map) **deltas;
     khash_t(om_market_order_map) *orders;
 } OmMarketPublicWorker;
@@ -389,6 +399,38 @@ int om_market_worker_clear_dirty(OmMarketWorker *worker,
  */
 int om_market_public_is_dirty(const OmMarketPublicWorker *worker, uint16_t product_id);
 int om_market_public_clear_dirty(OmMarketPublicWorker *worker, uint16_t product_id);
+
+/* ============================================================================
+ * Dirty work-list iteration
+ *
+ * A flush previously had to probe is_dirty for every subscription (O(books))
+ * to find the few that changed. These let it walk only the dirty ladders.
+ * Usage per flush: compact (drop entries cleared since the last pass), read
+ * dirty_count, then dirty_at(i) for each i to recover the (org, product) keys.
+ * Entries are appended on the 0->1 dirty transition; clearing a dirty flag does
+ * not remove the entry (compaction does), so a stale entry is harmless (its
+ * ladder simply yields no deltas).
+ * ============================================================================ */
+
+/** Number of dirty private ladders currently listed. */
+uint32_t om_market_worker_dirty_count(const OmMarketWorker *worker);
+
+/** Recover the i-th dirty ladder's (org_id, product_id). 0 on success. */
+int om_market_worker_dirty_at(const OmMarketWorker *worker, uint32_t i,
+                              uint16_t *org_id, uint16_t *product_id);
+
+/** Drop list entries whose dirty flag was cleared. Call once per flush pass. */
+void om_market_worker_compact_dirty(OmMarketWorker *worker);
+
+/** Number of dirty public product ladders currently listed. */
+uint32_t om_market_public_dirty_count(const OmMarketPublicWorker *worker);
+
+/** Recover the i-th dirty public ladder's product_id. 0 on success. */
+int om_market_public_dirty_at(const OmMarketPublicWorker *worker, uint32_t i,
+                              uint16_t *product_id);
+
+/** Drop list entries whose dirty flag was cleared. Call once per flush pass. */
+void om_market_public_compact_dirty(OmMarketPublicWorker *worker);
 
 
 #endif

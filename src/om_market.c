@@ -660,6 +660,21 @@ static int om_market_worker_init(OmMarketWorker *worker,
         om_market_worker_destroy(worker);
         return OM_ERR_LADDER_DIRTY;
     }
+    /* Dirty work-list + reverse (org,product) map, keyed by ladder index. The
+     * ladder index of subs[i] is i (see pair_to_ladder/ladder_index below), so
+     * the reverse map is just the per-worker subscription order. */
+    worker->dirty_list = calloc(sub_count > 0 ? sub_count : 1U, sizeof(*worker->dirty_list));
+    worker->ladder_org = calloc(sub_count > 0 ? sub_count : 1U, sizeof(*worker->ladder_org));
+    worker->ladder_product = calloc(sub_count > 0 ? sub_count : 1U, sizeof(*worker->ladder_product));
+    if (!worker->dirty_list || !worker->ladder_org || !worker->ladder_product) {
+        om_market_worker_destroy(worker);
+        return OM_ERR_LADDER_DIRTY;
+    }
+    worker->dirty_count = 0;
+    for (uint32_t i = 0; i < sub_count; i++) {
+        worker->ladder_org[i] = subs[i].org_id;
+        worker->ladder_product[i] = subs[i].product_id;
+    }
     worker->ladder_deltas = calloc(sub_count * 2U, sizeof(*worker->ladder_deltas));
     if (!worker->ladder_deltas) {
         om_market_worker_destroy(worker);
@@ -772,6 +787,13 @@ static int om_market_public_worker_init(OmMarketPublicWorker *worker,
         om_market_public_worker_destroy(worker);
         return OM_ERR_LADDER_DIRTY;
     }
+    /* Dirty work-list so a flush walks only changed products (O(dirty)). */
+    worker->dirty_list = calloc(max_products > 0 ? (size_t)max_products : 1U, sizeof(*worker->dirty_list));
+    if (!worker->dirty_list) {
+        om_market_public_worker_destroy(worker);
+        return OM_ERR_LADDER_DIRTY;
+    }
+    worker->dirty_count = 0;
     worker->deltas = calloc((size_t)max_products * 2U, sizeof(*worker->deltas));
     if (!worker->deltas) {
         om_market_public_worker_destroy(worker);
@@ -822,6 +844,7 @@ static void om_market_public_worker_destroy(OmMarketPublicWorker *worker) {
     }
     free(worker->deltas);
     free(worker->dirty);
+    free(worker->dirty_list);
     free(worker->ladders);
     free(worker->product_has_subs);
     memset(worker, 0, sizeof(*worker));
@@ -858,6 +881,9 @@ static void om_market_worker_destroy(OmMarketWorker *worker) {
     }
     free(worker->ladder_index);
     free(worker->ladder_dirty);
+    free(worker->dirty_list);
+    free(worker->ladder_org);
+    free(worker->ladder_product);
     if (worker->ladder_deltas) {
         for (uint32_t i = 0; i < worker->subscription_count * 2U; i++) {
             if (worker->ladder_deltas[i]) {
@@ -1109,13 +1135,26 @@ static int om_market_worker_find_ladder(const OmMarketWorker *worker,
 
 static void om_market_ladder_mark_dirty(OmMarketWorker *worker, uint32_t ladder_idx) {
     if (worker && worker->ladder_dirty && ladder_idx < worker->subscription_count) {
-        worker->ladder_dirty[ladder_idx] = 1U;
+        /* Append to the work-list only on the clean->dirty edge, so an entry is
+         * listed at most once between compactions and the list can never exceed
+         * subscription_count. */
+        if (!worker->ladder_dirty[ladder_idx]) {
+            worker->ladder_dirty[ladder_idx] = 1U;
+            if (worker->dirty_list && worker->dirty_count < worker->subscription_count) {
+                worker->dirty_list[worker->dirty_count++] = ladder_idx;
+            }
+        }
     }
 }
 
 static void om_market_public_mark_dirty(OmMarketPublicWorker *worker, uint16_t product_id) {
     if (worker && worker->dirty && product_id < worker->max_products) {
-        worker->dirty[product_id] = 1U;
+        if (!worker->dirty[product_id]) {
+            worker->dirty[product_id] = 1U;
+            if (worker->dirty_list && worker->dirty_count < worker->max_products) {
+                worker->dirty_list[worker->dirty_count++] = product_id;
+            }
+        }
     }
 }
 
@@ -1310,6 +1349,12 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
 
             gstate->remaining = 0;
             gstate->active = false;
+            /* Terminal: a cancelled/deactivated order has remaining==0, so ACTIVATE
+             * can never restore it (see test_market_deactivate_activate_semantics)
+             * and no later event references it. Evict it from global_orders so the
+             * map tracks only live orders instead of growing with every order ever
+             * seen (the mktman RSS-growth source). */
+            kh_del(om_market_order_map, worker->global_orders, git);
             return 0;
         }
         case OM_WAL_ACTIVATE: {
@@ -1418,6 +1463,9 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
                 if (sit != kh_end(worker->product_order_sets[gstate->product_id])) {
                     kh_del(om_market_order_set, worker->product_order_sets[gstate->product_id], sit);
                 }
+                /* Fully matched: terminal, evict from global_orders so the map
+                 * tracks only live orders (bounds memory). */
+                kh_del(om_market_order_map, worker->global_orders, git);
             }
             return 0;
         }
@@ -1481,6 +1529,9 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
                 om_market_delta_for_public(worker, product_id, is_bid);
             om_market_delta_add(delta_map, pub_state->price, -(int64_t)removed);
             om_market_public_mark_dirty(worker, product_id);
+            /* Terminal (remaining==0): evict so the order map tracks only live
+             * orders instead of every order ever seen (bounds memory). */
+            kh_del(om_market_order_map, worker->orders, pub_it);
             return 0;
         }
         case OM_WAL_ACTIVATE: {
@@ -1526,6 +1577,10 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
                 om_market_delta_for_public(worker, product_id, is_bid);
             om_market_delta_add(delta_map, pub_state->price, -(int64_t)match_vol);
             om_market_public_mark_dirty(worker, product_id);
+            /* Fully matched: terminal, evict from the order map (bounds memory). */
+            if (pub_state->remaining == 0) {
+                kh_del(om_market_order_map, worker->orders, pub_it);
+            }
             return 0;
         }
         default:
@@ -1917,4 +1972,73 @@ int om_market_public_clear_dirty(OmMarketPublicWorker *worker, uint16_t product_
     }
     worker->dirty[product_id] = 0;
     return 0;
+}
+
+/* ============================================================================
+ * Dirty Work-List Iteration
+ * ============================================================================ */
+
+uint32_t om_market_worker_dirty_count(const OmMarketWorker *worker) {
+    return (worker && worker->dirty_list) ? worker->dirty_count : 0U;
+}
+
+int om_market_worker_dirty_at(const OmMarketWorker *worker, uint32_t i,
+                              uint16_t *org_id, uint16_t *product_id) {
+    if (!worker || !worker->dirty_list || i >= worker->dirty_count) {
+        return OM_ERR_OUT_OF_RANGE;
+    }
+    uint32_t ladder_idx = worker->dirty_list[i];
+    if (ladder_idx >= worker->subscription_count) {
+        return OM_ERR_OUT_OF_RANGE;
+    }
+    if (org_id) {
+        *org_id = worker->ladder_org ? worker->ladder_org[ladder_idx] : 0U;
+    }
+    if (product_id) {
+        *product_id = worker->ladder_product ? worker->ladder_product[ladder_idx] : 0U;
+    }
+    return 0;
+}
+
+void om_market_worker_compact_dirty(OmMarketWorker *worker) {
+    if (!worker || !worker->dirty_list || !worker->ladder_dirty) {
+        return;
+    }
+    uint32_t w = 0;
+    for (uint32_t r = 0; r < worker->dirty_count; r++) {
+        uint32_t ladder_idx = worker->dirty_list[r];
+        if (ladder_idx < worker->subscription_count && worker->ladder_dirty[ladder_idx]) {
+            worker->dirty_list[w++] = ladder_idx;
+        }
+    }
+    worker->dirty_count = w;
+}
+
+uint32_t om_market_public_dirty_count(const OmMarketPublicWorker *worker) {
+    return (worker && worker->dirty_list) ? worker->dirty_count : 0U;
+}
+
+int om_market_public_dirty_at(const OmMarketPublicWorker *worker, uint32_t i,
+                              uint16_t *product_id) {
+    if (!worker || !worker->dirty_list || i >= worker->dirty_count) {
+        return OM_ERR_OUT_OF_RANGE;
+    }
+    if (product_id) {
+        *product_id = worker->dirty_list[i];
+    }
+    return 0;
+}
+
+void om_market_public_compact_dirty(OmMarketPublicWorker *worker) {
+    if (!worker || !worker->dirty_list || !worker->dirty) {
+        return;
+    }
+    uint32_t w = 0;
+    for (uint32_t r = 0; r < worker->dirty_count; r++) {
+        uint16_t product_id = worker->dirty_list[r];
+        if (product_id < worker->max_products && worker->dirty[product_id]) {
+            worker->dirty_list[w++] = product_id;
+        }
+    }
+    worker->dirty_count = w;
 }
