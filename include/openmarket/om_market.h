@@ -51,7 +51,16 @@ typedef struct OmMarketOrderState {
 KHASH_MAP_INIT_INT64(om_market_order_map, OmMarketOrderState)
 KHASH_SET_INIT_INT64(om_market_order_set)
 KHASH_MAP_INIT_INT(om_market_pair_map, uint32_t)
-KHASH_MAP_INIT_INT64(om_market_delta_map, int64_t)
+/* The delta map value carries both the signed delta since last flush AND the
+ * running absolute per-viewer qty at that price. Maintaining abs_qty in the
+ * same entry the process path already touches lets copy_deltas report it O(1)
+ * at flush, replacing the O(orders-in-product) order-set walk get_qty did —
+ * with NO second map (the prior 131k-map attempt thrashed the process path). */
+typedef struct OmMarketDeltaEntry {
+    int64_t delta;       /* signed change since last flush */
+    uint64_t abs_qty;    /* running per-viewer absolute qty at this price */
+} OmMarketDeltaEntry;
+KHASH_MAP_INIT_INT64(om_market_delta_map, OmMarketDeltaEntry)
 KHASH_MAP_INIT_INT64(om_market_level_map, uint32_t)  /**< price → slot_idx */
 KHASH_MAP_INIT_INT64(om_market_qty_map, uint64_t)    /**< price → qty (per-org) */
 
@@ -117,6 +126,7 @@ typedef struct OmMarketLadder {
 typedef struct OmMarketDelta {
     uint64_t price;
     int64_t delta;
+    uint64_t abs_qty;  /**< current total per-viewer qty at this price (O(1) at flush) */
 } OmMarketDelta;
 
 
@@ -313,6 +323,15 @@ int om_market_worker_copy_deltas(const OmMarketWorker *worker,
                                  OmMarketDelta *out,
                                  size_t max);
 
+/** Copy private ladder deltas by pre-resolved ladder index (flush hot path:
+ * skips the find_ladder probe and fills abs_qty from the persistent qty map
+ * instead of walking the per-product order set). */
+int om_market_worker_copy_deltas_by_ladder(const OmMarketWorker *worker,
+                                           uint32_t ladder_idx,
+                                           uint16_t side,
+                                           OmMarketDelta *out,
+                                           size_t max);
+
 /**
  * Clear private ladder deltas after publish.
  * @return 0 on success, negative on error
@@ -321,6 +340,11 @@ int om_market_worker_clear_deltas(OmMarketWorker *worker,
                                   uint16_t org_id,
                                   uint16_t product_id,
                                   uint16_t side);
+
+/** Reset the per-flush delta map (kh_clear) by pre-resolved ladder index. */
+int om_market_worker_clear_deltas_by_ladder(OmMarketWorker *worker,
+                                            uint32_t ladder_idx,
+                                            uint16_t side);
 
 /**
  * Get count of public ladder deltas for product/side.
@@ -391,6 +415,10 @@ int om_market_worker_clear_dirty(OmMarketWorker *worker,
                                  uint16_t org_id,
                                  uint16_t product_id);
 
+/** Clear dirty flag by pre-resolved ladder index. */
+int om_market_worker_clear_dirty_by_ladder(OmMarketWorker *worker,
+                                           uint32_t ladder_idx);
+
 /**
  * Check whether a public ladder changed since last publish.
  * @param worker Worker instance
@@ -418,6 +446,12 @@ uint32_t om_market_worker_dirty_count(const OmMarketWorker *worker);
 /** Recover the i-th dirty ladder's (org_id, product_id). 0 on success. */
 int om_market_worker_dirty_at(const OmMarketWorker *worker, uint32_t i,
                               uint16_t *org_id, uint16_t *product_id);
+
+/** Recover the i-th dirty ladder's pre-resolved ladder_idx (avoids the
+ * find_ladder probe on the flush path). 0 on success. */
+int om_market_worker_dirty_ladder_at(const OmMarketWorker *worker, uint32_t i,
+                                     uint32_t *ladder_idx,
+                                     uint16_t *org_id, uint16_t *product_id);
 
 /** Drop list entries whose dirty flag was cleared. Call once per flush pass. */
 void om_market_worker_compact_dirty(OmMarketWorker *worker);
