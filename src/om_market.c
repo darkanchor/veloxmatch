@@ -1133,6 +1133,13 @@ static int om_market_worker_find_ladder(const OmMarketWorker *worker,
     return 0;
 }
 
+int om_market_worker_ladder_index(const OmMarketWorker *worker,
+                                  uint16_t org_id,
+                                  uint16_t product_id,
+                                  uint32_t *out_index) {
+    return om_market_worker_find_ladder(worker, org_id, product_id, out_index);
+}
+
 static void om_market_ladder_mark_dirty(OmMarketWorker *worker, uint32_t ladder_idx) {
     if (worker && worker->ladder_dirty && ladder_idx < worker->subscription_count) {
         /* Append to the work-list only on the clean->dirty edge, so an entry is

@@ -304,6 +304,15 @@ int om_market_worker_is_subscribed(const OmMarketWorker *worker,
                                   uint16_t product_id);
 
 /**
+ * Resolve a private ladder to its stable worker-local index.
+ * @return 0 on success, negative on error
+ */
+int om_market_worker_ladder_index(const OmMarketWorker *worker,
+                                  uint16_t org_id,
+                                  uint16_t product_id,
+                                  uint32_t *out_index);
+
+/**
  * Get count of private ladder deltas for (org, product, side).
  * @return count on success, 0 if none, negative on error
  */
