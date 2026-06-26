@@ -145,6 +145,7 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
     const bool has_pre_booked = cb->pre_booked != NULL;
     const bool has_on_booked = cb->on_booked != NULL;
     const bool has_on_cancel = cb->on_cancel != NULL;
+    const bool has_on_decrement_cancel = cb->on_decrement_cancel != NULL;
 
     uint64_t match_ts_ns = 0;
     if (wal) {
@@ -202,6 +203,53 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
 
             if (has_can_match) {
                 uint64_t allowed = cb->can_match(maker, taker, cb->user_ctx);
+                if (OM_UNLIKELY(allowed == OM_CAN_MATCH_CANCEL_MAKER ||
+                                allowed == OM_CAN_MATCH_CANCEL_BOTH)) {
+                    uint32_t maker_slot_idx = om_slot_get_idx(slab, maker);
+                    if (has_on_cancel) {
+                        cb->on_cancel(maker, cb->user_ctx);
+                    }
+                    if (wal) {
+                        om_wal_cancel(wal, maker->order_id, maker_slot_idx, product_id);
+                    }
+                    om_orderbook_remove_slot(book, product_id, maker);
+                    maker_idx = next_maker_idx;
+                    if (allowed == OM_CAN_MATCH_CANCEL_BOTH) {
+                        taker_remaining = 0;
+                        taker->volume_remain = 0;
+                        break;
+                    }
+                    continue;
+                }
+                if (OM_UNLIKELY(allowed == OM_CAN_MATCH_DECREMENT_CANCEL)) {
+                    uint64_t dec_qty = matchable;
+                    maker->volume_remain -= dec_qty;
+                    taker_remaining -= dec_qty;
+                    taker->volume_remain = taker_remaining;
+                    if (has_on_decrement_cancel) {
+                        cb->on_decrement_cancel(maker, taker, dec_qty, cb->user_ctx);
+                    }
+                    if (wal) {
+                        OmWalMatch rec = {
+                            .maker_id = maker->order_id,
+                            .taker_id = taker->order_id,
+                            .price = level_price,
+                            .volume = dec_qty,
+                            .timestamp_ns = match_ts_ns,
+                            .product_id = product_id,
+                            .reserved = {0, 0, 0}
+                        };
+                        om_wal_match(wal, &rec);
+                    }
+                    if (OM_UNLIKELY(maker->volume_remain == 0)) {
+                        om_orderbook_remove_slot(book, product_id, maker);
+                        maker_idx = next_maker_idx;
+                    }
+                    if (OM_UNLIKELY(taker_remaining == 0)) {
+                        break;
+                    }
+                    continue;
+                }
                 if (OM_UNLIKELY(allowed == 0)) {
                     maker_idx = next_maker_idx;
                     continue;

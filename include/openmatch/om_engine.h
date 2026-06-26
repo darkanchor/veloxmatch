@@ -39,6 +39,12 @@ typedef uint64_t (*OmCanMatchFn)(const OmSlabSlot *maker,
                                   const OmSlabSlot *taker, 
                                   void *user_ctx);
 
+/* Reserved OmCanMatchFn action sentinels. Normal callbacks return a matchable
+ * quantity. These high values request a structural self-trade action instead. */
+#define OM_CAN_MATCH_CANCEL_MAKER (UINT64_MAX - 1ULL)
+#define OM_CAN_MATCH_CANCEL_BOTH  (UINT64_MAX - 2ULL)
+#define OM_CAN_MATCH_DECREMENT_CANCEL (UINT64_MAX - 3ULL)
+
 /**
  * Match callback type
  * Called when a trade is executed for a single order (maker or taker)
@@ -97,6 +103,20 @@ typedef void (*OmOnFilledFn)(const OmSlabSlot *order, void *user_ctx);
 typedef void (*OmOnCancelFn)(const OmSlabSlot *order, void *user_ctx);
 
 /**
+ * Decrement-cancel callback type
+ * Called when self-trade prevention decrements maker/taker instead of trading.
+ *
+ * @param maker The resting order after its remaining quantity was decremented
+ * @param taker The incoming order after its remaining quantity was decremented
+ * @param qty Quantity removed from both orders
+ * @param user_ctx User-provided context pointer
+ */
+typedef void (*OmOnDecrementCancelFn)(const OmSlabSlot *maker,
+                                      const OmSlabSlot *taker,
+                                      uint64_t qty,
+                                      void *user_ctx);
+
+/**
  * Pre-booked callback type
  * Called before booking a taker order that has remaining quantity
  * Return true to allow booking, false to cancel remaining quantity.
@@ -118,6 +138,7 @@ typedef struct OmEngineCallbacks {
     OmOnBookedFn on_booked;       /**< Optional booked notification callback */
     OmOnFilledFn on_filled;       /**< Optional filled notification callback */
     OmOnCancelFn on_cancel;        /**< Optional cancel notification callback */
+    OmOnDecrementCancelFn on_decrement_cancel; /**< Optional decrement-cancel callback */
     OmPreBookedFn pre_booked;      /**< Optional pre-booking decision callback */
     void *user_ctx;             /**< User context passed to callbacks */
 } OmEngineCallbacks;
