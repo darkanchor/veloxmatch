@@ -35,7 +35,9 @@ if(SQLite3_FOUND)
             ${CMAKE_SOURCE_DIR}/include
             ${SQLite3_INCLUDE_DIRS}
     )
-    if(TARGET SQLite::SQLite3)
+    if(TARGET SQLite3::SQLite3)
+        target_link_libraries(wal_query PRIVATE openmatch SQLite3::SQLite3)
+    elseif(TARGET SQLite::SQLite3)
         target_link_libraries(wal_query PRIVATE openmatch SQLite::SQLite3)
     else()
         target_link_libraries(wal_query PRIVATE openmatch ${SQLite3_LIBRARIES})
