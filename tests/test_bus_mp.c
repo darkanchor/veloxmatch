@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "ombus/om_bus_mp.h"
@@ -350,6 +351,77 @@ START_TEST(test_bus_mp_poll_batch_stops_at_uncommitted_gap) {
 }
 END_TEST
 
+START_TEST(test_bus_mp_wait_times_out_when_empty) {
+    OmBusMpConfig cfg = {
+        .capacity = 8,
+        .slot_size = 64,
+        .max_producers = 1,
+    };
+    void *memory = bus_mp_alloc(&cfg, NULL);
+
+    OmBusMpConsumer consumer;
+    ck_assert_int_eq(om_bus_mp_consumer_open(&consumer, memory), 0);
+
+    ck_assert_int_eq(om_bus_mp_wait(&consumer, 0), OM_BUS_MP_WAIT_TIMEOUT);
+
+    struct timespec before;
+    struct timespec after;
+    ck_assert_int_eq(clock_gettime(CLOCK_MONOTONIC, &before), 0);
+    ck_assert_int_eq(om_bus_mp_wait(&consumer, 5 * 1000 * 1000ULL),
+                     OM_BUS_MP_WAIT_TIMEOUT);
+    ck_assert_int_eq(clock_gettime(CLOCK_MONOTONIC, &after), 0);
+    uint64_t elapsed_ns =
+        (uint64_t)(after.tv_sec - before.tv_sec) * 1000000000ULL +
+        (uint64_t)(after.tv_nsec - before.tv_nsec);
+    ck_assert_uint_ge(elapsed_ns, 1000000ULL);
+
+    free(memory);
+}
+END_TEST
+
+typedef struct BusMpWaitThread {
+    OmBusMpConsumer consumer;
+    int result;
+} BusMpWaitThread;
+
+static void *bus_mp_wait_thread(void *arg) {
+    BusMpWaitThread *ctx = (BusMpWaitThread *)arg;
+    ctx->result = om_bus_mp_wait(&ctx->consumer, 500 * 1000 * 1000ULL);
+    return NULL;
+}
+
+START_TEST(test_bus_mp_wait_wakes_on_publish) {
+    OmBusMpConfig cfg = {
+        .capacity = 8,
+        .slot_size = 64,
+        .max_producers = 1,
+    };
+    void *memory = bus_mp_alloc(&cfg, NULL);
+
+    OmBusMpProducer producer;
+    BusMpWaitThread ctx;
+    ck_assert_int_eq(om_bus_mp_producer_open(&producer, memory, 0), 0);
+    ck_assert_int_eq(om_bus_mp_consumer_open(&ctx.consumer, memory), 0);
+    ctx.result = -1;
+
+    pthread_t thread;
+    ck_assert_int_eq(pthread_create(&thread, NULL, bus_mp_wait_thread, &ctx), 0);
+    usleep(20 * 1000);
+
+    uint32_t payload = 1234;
+    ck_assert_int_eq(om_bus_mp_publish(&producer, &payload, sizeof(payload), NULL), 0);
+    ck_assert_int_eq(pthread_join(thread, NULL), 0);
+    ck_assert_int_eq(ctx.result, OM_BUS_MP_WAIT_READY);
+
+    OmBusMpRecord rec;
+    ck_assert_int_eq(om_bus_mp_poll(&ctx.consumer, &rec), OM_BUS_MP_POLL_RECORD);
+    ck_assert_uint_eq(rec.sequence, 0);
+    ck_assert_int_eq(memcmp(rec.payload, &payload, sizeof(payload)), 0);
+
+    free(memory);
+}
+END_TEST
+
 Suite *bus_mp_suite(void) {
     Suite *s = suite_create("BusMP");
     TCase *tc = tcase_create("MPSC");
@@ -362,6 +434,8 @@ Suite *bus_mp_suite(void) {
     tcase_add_test(tc, test_bus_mp_concurrent_producers);
     tcase_add_test(tc, test_bus_mp_poll_batch_drains_in_order);
     tcase_add_test(tc, test_bus_mp_poll_batch_stops_at_uncommitted_gap);
+    tcase_add_test(tc, test_bus_mp_wait_times_out_when_empty);
+    tcase_add_test(tc, test_bus_mp_wait_wakes_on_publish);
     suite_add_tcase(s, tc);
     return s;
 }

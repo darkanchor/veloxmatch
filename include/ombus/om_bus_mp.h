@@ -39,6 +39,12 @@ typedef enum OmBusMpPollResult {
     OM_BUS_MP_POLL_SKIPPED = 2,
 } OmBusMpPollResult;
 
+typedef enum OmBusMpWaitResult {
+    OM_BUS_MP_WAIT_TIMEOUT = 0,
+    OM_BUS_MP_WAIT_READY = 1,
+    OM_BUS_MP_WAIT_INTERRUPTED = 2,
+} OmBusMpWaitResult;
+
 typedef struct OmBusMpConfig {
     uint32_t capacity;        /* Ring capacity, must be a power of two */
     uint32_t slot_size;       /* Bytes per slot, including header; cacheline multiple */
@@ -105,6 +111,19 @@ int om_bus_mp_commit(OmBusMpProducer *producer, OmBusMpClaim *claim);
 int om_bus_mp_publish(OmBusMpProducer *producer, const void *payload,
                       uint16_t payload_len, uint64_t *sequence_out);
 int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record);
+
+/**
+ * Wait until the ring is likely non-empty, or until timeout_ns elapses.
+ *
+ * This is a low-idle-CPU companion to om_bus_mp_poll(). It is intentionally a
+ * readiness hint: callers must still call om_bus_mp_poll() after it returns
+ * READY, because another consumer is not expected but a claimed/uncommitted slot
+ * can make the queue appear pending before a record is readable.
+ *
+ * timeout_ns == 0 performs a nonblocking readiness check. Negative errors are
+ * OmBusMpError values; non-negative values are OmBusMpWaitResult.
+ */
+int om_bus_mp_wait(OmBusMpConsumer *consumer, uint64_t timeout_ns);
 
 /**
  * Drain up to max_records ready records into the caller's array in one call.

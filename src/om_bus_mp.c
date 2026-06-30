@@ -1,10 +1,18 @@
 #include "ombus/om_bus_mp.h"
 
 #include <stdbool.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <time.h>
+#include <unistd.h>
+
+#ifdef __linux__
+#include <linux/futex.h>
+#endif
 
 typedef struct OmBusMpMetaLine {
     uint32_t magic;
@@ -12,9 +20,10 @@ typedef struct OmBusMpMetaLine {
     uint32_t capacity;
     uint32_t slot_size;
     uint32_t max_producers;
-    uint32_t _reserved;
+    _Atomic uint32_t notify_seq;
+    _Atomic uint32_t waiters;
     uint64_t skip_timeout_ns;
-    uint8_t _pad[32];
+    uint8_t _pad[24];
 } OmBusMpMetaLine;
 
 typedef struct OmBusMpCursorLine {
@@ -104,6 +113,31 @@ static inline OmBusMpSlot *_om_bus_mp_slot(void *slots, uint32_t slot_size, uint
     return (OmBusMpSlot *)((char *)slots + idx * slot_size);
 }
 
+static inline void _om_bus_mp_notify_publish(OmBusMpHeader *hdr) {
+    if (atomic_load_explicit(&hdr->meta.waiters, memory_order_acquire) == 0U) {
+        return;
+    }
+    atomic_fetch_add_explicit(&hdr->meta.notify_seq, 1U, memory_order_release);
+#ifdef __linux__
+    (void)syscall(SYS_futex, (uint32_t *)&hdr->meta.notify_seq, FUTEX_WAKE,
+                  1, NULL, NULL, 0);
+#endif
+}
+
+static int _om_bus_mp_futex_wait(_Atomic uint32_t *addr, uint32_t expected,
+                                 const struct timespec *timeout) {
+#ifdef __linux__
+    return (int)syscall(SYS_futex, (uint32_t *)addr, FUTEX_WAIT, expected,
+                        timeout, NULL, 0);
+#else
+    (void)addr;
+    (void)expected;
+    if (timeout) nanosleep(timeout, NULL);
+    errno = ETIMEDOUT;
+    return -1;
+#endif
+}
+
 /* Hint the CPU to pull a slot's cacheline ahead of use. Mainly helps when
  * draining a backlog whose slots have fallen out of cache; a no-op where the
  * builtin is unavailable. */
@@ -162,6 +196,8 @@ int om_bus_mp_init(void *memory, size_t memory_size, const OmBusMpConfig *config
     hdr->meta.max_producers = config->max_producers;
     hdr->meta.skip_timeout_ns = config->skip_timeout_ns
         ? config->skip_timeout_ns : OM_BUS_MP_DEFAULT_SKIP_TIMEOUT_NS;
+    atomic_init(&hdr->meta.notify_seq, 0U);
+    atomic_init(&hdr->meta.waiters, 0U);
     atomic_init(&hdr->producer_cursor.enqueue_pos, 0U);
     atomic_init(&hdr->consumer_cursor.dequeue_pos, 0U);
     atomic_init(&hdr->producer_stats.records_published, 0U);
@@ -288,6 +324,7 @@ int om_bus_mp_commit(OmBusMpProducer *producer, OmBusMpClaim *claim) {
     atomic_fetch_add_explicit(&hdr->producer_stats.records_published, 1U,
                               memory_order_relaxed);
     atomic_fetch_add_explicit(&counter->published, 1U, memory_order_relaxed);
+    _om_bus_mp_notify_publish(hdr);
     return 0;
 }
 
@@ -366,6 +403,41 @@ int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record) {
     }
 
     return OM_BUS_MP_POLL_EMPTY;
+}
+
+int om_bus_mp_wait(OmBusMpConsumer *consumer, uint64_t timeout_ns) {
+    if (!consumer || !consumer->base) return OM_BUS_MP_ERR_INIT;
+
+    OmBusMpHeader *hdr = (OmBusMpHeader *)consumer->base;
+    if (om_bus_mp_pending(consumer) > 0U) return OM_BUS_MP_WAIT_READY;
+
+    uint32_t expected = atomic_load_explicit(&hdr->meta.notify_seq,
+                                             memory_order_acquire);
+    atomic_fetch_add_explicit(&hdr->meta.waiters, 1U, memory_order_acq_rel);
+    if (om_bus_mp_pending(consumer) > 0U) {
+        atomic_fetch_sub_explicit(&hdr->meta.waiters, 1U, memory_order_acq_rel);
+        return OM_BUS_MP_WAIT_READY;
+    }
+    if (timeout_ns == 0U) {
+        atomic_fetch_sub_explicit(&hdr->meta.waiters, 1U, memory_order_acq_rel);
+        return OM_BUS_MP_WAIT_TIMEOUT;
+    }
+
+    struct timespec ts;
+    struct timespec *ts_ptr = NULL;
+    if (timeout_ns != UINT64_MAX) {
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000ULL);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000ULL);
+        ts_ptr = &ts;
+    }
+
+    int rc = _om_bus_mp_futex_wait(&hdr->meta.notify_seq, expected, ts_ptr);
+    atomic_fetch_sub_explicit(&hdr->meta.waiters, 1U, memory_order_acq_rel);
+    if (rc == 0) return OM_BUS_MP_WAIT_READY;
+    if (errno == EAGAIN) return OM_BUS_MP_WAIT_READY;
+    if (errno == ETIMEDOUT) return OM_BUS_MP_WAIT_TIMEOUT;
+    if (errno == EINTR) return OM_BUS_MP_WAIT_INTERRUPTED;
+    return OM_BUS_MP_WAIT_READY;
 }
 
 int om_bus_mp_poll_batch(OmBusMpConsumer *consumer, OmBusMpRecord *records,
