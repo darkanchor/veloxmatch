@@ -249,6 +249,8 @@ uint64_t om_bus_endpoint_wal_seq(const OmBusEndpoint *ep);
  * @param ep Endpoint handle (NULL-safe)
  */
 void om_bus_endpoint_close(OmBusEndpoint *ep);
+/* Bounded cache bootstrap; nonzero means the full generation is retained. */
+int om_bus_endpoint_rewind_retained(OmBusEndpoint *ep);
 
 /* ============================================================================
  * Consumer Cursor Persistence

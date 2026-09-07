@@ -425,6 +425,7 @@ static int om_ladder_add_qty(OmMarketLevelSlab *slab,
     if (it != kh_end(ladder->price_to_slot)) {
         /* Price exists, just add quantity */
         uint32_t slot_idx = kh_val(ladder->price_to_slot, it);
+        if (UINT64_MAX - slab->slots[slot_idx].qty < qty) return OM_ERR_OUT_OF_RANGE;
         slab->slots[slot_idx].qty += qty;
         return 0;
     }
@@ -675,6 +676,12 @@ static int om_market_worker_init(OmMarketWorker *worker,
         worker->ladder_org[i] = subs[i].org_id;
         worker->ladder_product[i] = subs[i].product_id;
     }
+    worker->delta_heads = malloc(sub_count * 2U * sizeof(*worker->delta_heads));
+    if (!worker->delta_heads) {
+        om_market_worker_destroy(worker);
+        return OM_ERR_ALLOC_FAILED;
+    }
+    for (uint32_t i = 0; i < sub_count * 2U; i++) worker->delta_heads[i] = UINT64_MAX;
     worker->ladder_deltas = calloc(sub_count * 2U, sizeof(*worker->ladder_deltas));
     if (!worker->ladder_deltas) {
         om_market_worker_destroy(worker);
@@ -893,6 +900,7 @@ static void om_market_worker_destroy(OmMarketWorker *worker) {
     }
     free(worker->product_has_subs);
     free(worker->ladder_deltas);
+    free(worker->delta_heads);
     free(worker->product_offsets);
     free(worker->product_orgs);
     free(worker->product_ladder_indices);
@@ -1185,44 +1193,38 @@ static khash_t(om_market_delta_map) *om_market_delta_for_public(OmMarketPublicWo
     return worker->deltas[idx];
 }
 
-/* Accumulate both the per-flush signed delta and the running absolute per-viewer
- * qty in the SAME khash entry — one map per (ladder,side), no second map. `delta`
- * is the signed change since last flush; `abs_qty_delta` is the signed change to
- * the running absolute qty (same value for insert/activate/cancel/match — the
- * viewer's dealable qty moved by exactly the delta). Maintaining abs_qty here,
- * in the entry the process path already touches, lets copy_deltas report it O(1)
- * at flush and kills the O(orders-in-product) order-set walk get_qty did. */
-static void om_market_delta_add(khash_t(om_market_delta_map) *map,
-                                uint64_t price,
-                                int64_t delta,
-                                int64_t abs_qty_delta) {
-    if (!map || (delta == 0 && abs_qty_delta == 0)) {
-        return;
-    }
+/* One persistent map per private ladder side. Dirty links use prices, so
+ * khash growth cannot invalidate them. Public deltas remain window-local. */
+static int om_market_delta_add(khash_t(om_market_delta_map) *map,
+                               uint64_t price, int64_t delta,
+                               int64_t abs_qty_delta, uint64_t *head) {
+    if (!map || price == UINT64_MAX) return OM_ERR_INVALID_PARAM;
+    if (delta == 0 && abs_qty_delta == 0) return 0;
     int ret = 0;
-    khiter_t it = kh_get(om_market_delta_map, map, price);
-    if (it == kh_end(map)) {
-        it = kh_put(om_market_delta_map, map, price, &ret);
-        if (ret < 0) {
-            return;
+    khiter_t it = kh_put(om_market_delta_map, map, price, &ret);
+    if (ret < 0) return OM_ERR_HASH_PUT;
+    if (ret > 0) kh_val(map, it) = (OmMarketDeltaEntry){0};
+    OmMarketDeltaEntry *entry = &kh_val(map, it);
+    if ((delta > 0 && entry->delta > INT64_MAX - delta) ||
+        (delta < 0 && entry->delta < INT64_MIN - delta)) return OM_ERR_OUT_OF_RANGE;
+    if (head) {
+        uint64_t amount = abs_qty_delta < 0 ? (uint64_t)(-(abs_qty_delta + 1)) + 1U
+                                           : (uint64_t)abs_qty_delta;
+        if (abs_qty_delta < 0) {
+            if (entry->abs_qty < amount) return OM_ERR_OUT_OF_RANGE;
+            entry->abs_qty -= amount;
+        } else {
+            if (UINT64_MAX - entry->abs_qty < amount) return OM_ERR_OUT_OF_RANGE;
+            entry->abs_qty += amount;
         }
-        kh_val(map, it).delta = delta;
-        kh_val(map, it).abs_qty = (abs_qty_delta > 0) ? (uint64_t)abs_qty_delta : 0U;
-        if (kh_val(map, it).abs_qty == 0U && delta == 0) {
-            kh_del(om_market_delta_map, map, it);
+        if (!entry->dirty) {
+            entry->next_dirty = *head;
+            *head = price;
+            entry->dirty = true;
         }
-        return;
     }
-    kh_val(map, it).delta += delta;
-    uint64_t cur = kh_val(map, it).abs_qty;
-    if (abs_qty_delta < 0 && (uint64_t)(-abs_qty_delta) > cur) {
-        kh_val(map, it).abs_qty = 0U;
-    } else {
-        kh_val(map, it).abs_qty = cur + (uint64_t)abs_qty_delta;
-    }
-    if (kh_val(map, it).delta == 0 && kh_val(map, it).abs_qty == 0U) {
-        kh_del(om_market_delta_map, map, it);
-    }
+    entry->delta += delta;
+    return 0;
 }
 
 /* Compute per-org dealable qty from global order state + dealable callback.
@@ -1268,6 +1270,12 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
         return OM_ERR_NULL_PARAM;
     }
 
+    if (type == OM_WAL_INSERT) {
+        const OmWalInsert *r = data;
+        if (r->price > INT64_MAX || r->vol_remain > INT64_MAX) return OM_ERR_OUT_OF_RANGE;
+    } else if (type == OM_WAL_MATCH && ((const OmWalMatch *)data)->volume > INT64_MAX) {
+        return OM_ERR_OUT_OF_RANGE;
+    }
     switch (type) {
         case OM_WAL_INSERT: {
             const OmWalInsert *rec = (const OmWalInsert *)data;
@@ -1278,9 +1286,9 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
             uint16_t side = OM_GET_SIDE(rec->flags);
 
             /* 1. Update product ladder */
-            om_ladder_add_qty(&worker->product_slab,
+            { int rc = om_ladder_add_qty(&worker->product_slab,
                               &worker->product_ladders[rec->product_id],
-                              rec->price, rec->vol_remain, is_bid);
+                              rec->price, rec->vol_remain, is_bid); if (rc != 0) return rc; }
 
             /* 2. Record in global_orders with org/flags/vol_remain */
             int gret = 0;
@@ -1302,6 +1310,7 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
             int sret = 0;
             kh_put(om_market_order_set, worker->product_order_sets[rec->product_id],
                    rec->order_id, &sret);
+            if (sret < 0) return OM_ERR_HASH_PUT;
 
             /* 4. Fan-out: call dealable directly (no fake OmWalInsert needed) */
             uint32_t start = worker->product_offsets[rec->product_id];
@@ -1318,7 +1327,7 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
 
                 khash_t(om_market_delta_map) *delta_map =
                     om_market_delta_for_ladder(worker, ladder_idx, is_bid);
-                om_market_delta_add(delta_map, rec->price, (int64_t)qty, (int64_t)qty);
+                { int rc = om_market_delta_add(delta_map, rec->price, (int64_t)qty, (int64_t)qty, &worker->delta_heads[ladder_idx * 2U + (is_bid ? 0U : 1U)]); if (rc != 0) return rc; }
                 om_market_ladder_mark_dirty(worker, ladder_idx);
             }
             return 0;
@@ -1355,7 +1364,7 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
 
                 khash_t(om_market_delta_map) *delta_map =
                     om_market_delta_for_ladder(worker, ladder_idx, is_bid);
-                om_market_delta_add(delta_map, gstate->price, -(int64_t)pre_qty, -(int64_t)pre_qty);
+                { int rc = om_market_delta_add(delta_map, gstate->price, -(int64_t)pre_qty, -(int64_t)pre_qty, &worker->delta_heads[ladder_idx * 2U + (is_bid ? 0U : 1U)]); if (rc != 0) return rc; }
                 om_market_ladder_mark_dirty(worker, ladder_idx);
             }
 
@@ -1398,9 +1407,9 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
             /* 2. Mark active + update product ladder */
             bool is_bid = gstate->side == OM_SIDE_BID;
             gstate->active = true;
-            om_ladder_add_qty(&worker->product_slab,
+            { int rc = om_ladder_add_qty(&worker->product_slab,
                               &worker->product_ladders[gstate->product_id],
-                              gstate->price, gstate->remaining, is_bid);
+                              gstate->price, gstate->remaining, is_bid); if (rc != 0) return rc; }
 
             /* 3. Fan-out: compute per-org qty, record delta */
             uint32_t start = worker->product_offsets[gstate->product_id];
@@ -1418,7 +1427,7 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
 
                 khash_t(om_market_delta_map) *delta_map =
                     om_market_delta_for_ladder(worker, ladder_idx, is_bid);
-                om_market_delta_add(delta_map, gstate->price, (int64_t)qty, (int64_t)qty);
+                { int rc = om_market_delta_add(delta_map, gstate->price, (int64_t)qty, (int64_t)qty, &worker->delta_heads[ladder_idx * 2U + (is_bid ? 0U : 1U)]); if (rc != 0) return rc; }
                 om_market_ladder_mark_dirty(worker, ladder_idx);
             }
             return 0;
@@ -1470,7 +1479,7 @@ int om_market_worker_process(OmMarketWorker *worker, OmWalType type, const void 
 
                 khash_t(om_market_delta_map) *delta_map =
                     om_market_delta_for_ladder(worker, ladder_idx, is_bid);
-                om_market_delta_add(delta_map, gstate->price, delta, delta);
+                { int rc = om_market_delta_add(delta_map, gstate->price, delta, delta, &worker->delta_heads[ladder_idx * 2U + (is_bid ? 0U : 1U)]); if (rc != 0) return rc; }
                 om_market_ladder_mark_dirty(worker, ladder_idx);
             }
 
@@ -1504,6 +1513,12 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
         return OM_ERR_NULL_PARAM;
     }
 
+    if (type == OM_WAL_INSERT) {
+        const OmWalInsert *r = data;
+        if (r->price > INT64_MAX || r->vol_remain > INT64_MAX) return OM_ERR_OUT_OF_RANGE;
+    } else if (type == OM_WAL_MATCH && ((const OmWalMatch *)data)->volume > INT64_MAX) {
+        return OM_ERR_OUT_OF_RANGE;
+    }
     switch (type) {
         case OM_WAL_INSERT: {
             const OmWalInsert *rec = (const OmWalInsert *)data;
@@ -1525,10 +1540,10 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
             kh_val(worker->orders, pub_it) = pub_state;
             OmMarketLadder *ladder = &worker->ladders[rec->product_id];
             bool is_bid = OM_IS_BID(rec->flags);
-            om_ladder_add_qty(&worker->slab, ladder, rec->price, rec->vol_remain, is_bid);
+            { int rc = om_ladder_add_qty(&worker->slab, ladder, rec->price, rec->vol_remain, is_bid); if (rc != 0) return rc; }
             khash_t(om_market_delta_map) *delta_map =
                 om_market_delta_for_public(worker, rec->product_id, is_bid);
-            om_market_delta_add(delta_map, rec->price, (int64_t)rec->vol_remain, 0);
+            { int rc = om_market_delta_add(delta_map, rec->price, (int64_t)rec->vol_remain, 0, NULL); if (rc != 0) return rc; }
             om_market_public_mark_dirty(worker, rec->product_id);
             return 0;
         }
@@ -1552,7 +1567,7 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
             pub_state->active = false;
             khash_t(om_market_delta_map) *delta_map =
                 om_market_delta_for_public(worker, product_id, is_bid);
-            om_market_delta_add(delta_map, pub_state->price, -(int64_t)removed, 0);
+            { int rc = om_market_delta_add(delta_map, pub_state->price, -(int64_t)removed, 0, NULL); if (rc != 0) return rc; }
             om_market_public_mark_dirty(worker, product_id);
             /* Terminal (remaining==0): evict so the order map tracks only live
              * orders instead of every order ever seen (bounds memory). */
@@ -1572,11 +1587,11 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
             OmMarketLadder *ladder = &worker->ladders[pub_state->product_id];
             bool is_bid = pub_state->side == OM_SIDE_BID;
             uint64_t added = pub_state->remaining;
-            om_ladder_add_qty(&worker->slab, ladder, pub_state->price, added, is_bid);
+            { int rc = om_ladder_add_qty(&worker->slab, ladder, pub_state->price, added, is_bid); if (rc != 0) return rc; }
             pub_state->active = true;
             khash_t(om_market_delta_map) *delta_map =
                 om_market_delta_for_public(worker, pub_state->product_id, is_bid);
-            om_market_delta_add(delta_map, pub_state->price, (int64_t)added, 0);
+            { int rc = om_market_delta_add(delta_map, pub_state->price, (int64_t)added, 0, NULL); if (rc != 0) return rc; }
             om_market_public_mark_dirty(worker, pub_state->product_id);
             return 0;
         }
@@ -1600,7 +1615,7 @@ int om_market_public_process(OmMarketPublicWorker *worker, OmWalType type, const
             pub_state->remaining -= match_vol;
             khash_t(om_market_delta_map) *delta_map =
                 om_market_delta_for_public(worker, product_id, is_bid);
-            om_market_delta_add(delta_map, pub_state->price, -(int64_t)match_vol, 0);
+            { int rc = om_market_delta_add(delta_map, pub_state->price, -(int64_t)match_vol, 0, NULL); if (rc != 0) return rc; }
             om_market_public_mark_dirty(worker, product_id);
             /* Fully matched: terminal, evict from the order map (bounds memory). */
             if (pub_state->remaining == 0) {
@@ -1704,7 +1719,14 @@ int om_market_worker_delta_count(const OmMarketWorker *worker,
     }
     uint32_t idx = ladder_idx * 2U + (side == OM_SIDE_BID ? 0U : 1U);
     khash_t(om_market_delta_map) *map = worker->ladder_deltas[idx];
-    return map ? (int)kh_size(map) : 0;
+    int count = 0;
+    for (uint64_t price = worker->delta_heads[idx]; price != UINT64_MAX;) {
+        khiter_t it = kh_get(om_market_delta_map, map, price);
+        if (it == kh_end(map)) return OM_ERR_NOT_FOUND;
+        count++;
+        price = kh_val(map, it).next_dirty;
+    }
+    return count;
 }
 
 int om_market_worker_copy_deltas(const OmMarketWorker *worker,
@@ -1737,17 +1759,14 @@ int om_market_worker_copy_deltas_by_ladder(const OmMarketWorker *worker,
     if (!map) {
         return 0;
     }
-    /* abs_qty is maintained in the same entry the process path already touches,
-     * so one khash walk yields both delta and abs_qty — no O(orders) walk. */
     size_t count = 0;
-    for (khiter_t it = kh_begin(map); it != kh_end(map) && count < max; ++it) {
-        if (!kh_exist(map, it)) {
-            continue;
-        }
-        out[count].price = kh_key(map, it);
-        out[count].delta = kh_val(map, it).delta;
-        out[count].abs_qty = kh_val(map, it).abs_qty;
-        count++;
+    for (uint64_t price = worker->delta_heads[idx]; price != UINT64_MAX;) {
+        if (count == max) return OM_ERR_OUT_OF_RANGE; /* never a successful prefix */
+        khiter_t it = kh_get(om_market_delta_map, map, price);
+        if (it == kh_end(map)) return OM_ERR_NOT_FOUND;
+        out[count++] = (OmMarketDelta){ .price = price,
+            .delta = kh_val(map, it).delta, .abs_qty = kh_val(map, it).abs_qty };
+        price = kh_val(map, it).next_dirty;
     }
     return (int)count;
 }
@@ -1778,12 +1797,16 @@ int om_market_worker_clear_deltas_by_ladder(OmMarketWorker *worker,
     if (!map) {
         return 0;
     }
-    /* Reset the whole map each flush (original semantic). The map only holds
-     * this window's touched levels — bounded by the dirty work, same footprint
-     * as before. abs_qty is re-accumulated by the process path each window from
-     * the signed delta (which IS the abs_qty change for that event), so a fresh
-     * map still yields correct abs_qty at flush without the order-set walk. */
-    kh_clear(om_market_delta_map, map);
+    uint64_t price = worker->delta_heads[idx];
+    while (price != UINT64_MAX) {
+        khiter_t it = kh_get(om_market_delta_map, map, price);
+        if (it == kh_end(map)) return OM_ERR_NOT_FOUND;
+        price = kh_val(map, it).next_dirty;
+        kh_val(map, it).delta = 0;
+        kh_val(map, it).dirty = false;
+        if (kh_val(map, it).abs_qty == 0) kh_del(om_market_delta_map, map, it);
+    }
+    worker->delta_heads[idx] = UINT64_MAX;
     return 0;
 }
 
@@ -1826,6 +1849,7 @@ int om_market_public_copy_deltas(const OmMarketPublicWorker *worker,
     if (!map) {
         return 0;
     }
+    if (kh_size(map) > max) return OM_ERR_OUT_OF_RANGE;
     size_t count = 0;
     for (khiter_t it = kh_begin(map); it != kh_end(map) && count < max; ++it) {
         if (!kh_exist(map, it)) {

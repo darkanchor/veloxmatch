@@ -3,6 +3,37 @@
 #include "om_error.h"
 #include <string.h>
 
+#include "kavl.h"
+
+/* Preserve Q1 best-price/FIFO traversal; use a compact preallocated AVL only to
+ * locate price levels and insertion neighbors. No allocation on the hot path. */
+struct OmPriceNode {
+    KAVL_HEAD(struct OmPriceNode) tree;
+    uint64_t price;
+    uint32_t slot;
+};
+#define price_compare(a, b) (((a)->price > (b)->price) - ((a)->price < (b)->price))
+KAVL_INIT(price, struct OmPriceNode, tree, price_compare)
+
+static struct OmPriceNode **price_root(OmOrderbookContext *ctx, uint16_t product, bool bid) {
+    return &ctx->price_roots[(size_t)product * 2 + (bid ? 0 : 1)];
+}
+static void price_add(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *slot) {
+    uint32_t index = om_slot_get_idx(&ctx->slab, slot);
+    struct OmPriceNode *node = &ctx->price_nodes[index];
+    memset(node, 0, sizeof(*node));
+    node->slot = index; node->price = slot->price;
+    kavl_insert(price, price_root(ctx, product, bid), node, NULL);
+}
+static void price_remove(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *slot) {
+    struct OmPriceNode key = {.price = slot->price};
+    kavl_erase(price, price_root(ctx, product, bid), &key, NULL);
+}
+static void price_promote(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *old, OmSlabSlot *next) {
+    price_remove(ctx, product, bid, old);
+    price_add(ctx, product, bid, next);
+}
+
 int om_orderbook_init(OmOrderbookContext *ctx, const OmSlabConfig *config, struct OmWal *wal,
                       uint32_t max_products, uint32_t max_org, uint32_t hashmap_initial_cap)
 {
@@ -61,6 +92,12 @@ int om_orderbook_init(OmOrderbookContext *ctx, const OmSlabConfig *config, struc
         return OM_ERR_HASH_INIT;
     }
 
+    ctx->price_nodes = calloc(config->total_slots, sizeof(*ctx->price_nodes));
+    ctx->price_roots = calloc((size_t)max_products * 2, sizeof(*ctx->price_roots));
+    if (!ctx->price_nodes || !ctx->price_roots) {
+        om_orderbook_destroy(ctx);
+        return OM_ERR_PRODUCT_ALLOC;
+    }
     ctx->next_slot_idx = 0;
     ctx->wal = wal;
     if (wal) {
@@ -82,6 +119,10 @@ void om_orderbook_destroy(OmOrderbookContext *ctx)
         ctx->order_hashmap = NULL;
     }
     om_slab_destroy(&ctx->slab);
+    free(ctx->price_nodes);
+    free(ctx->price_roots);
+    ctx->price_nodes = NULL;
+    ctx->price_roots = NULL;
     free(ctx->org_heads);
     free(ctx->products);
     ctx->org_heads = NULL;
@@ -120,39 +161,20 @@ static OmSlabSlot *find_price_level_with_insertion_point(OmOrderbookContext *ctx
         return NULL;
     }
 
-    /* Scan through Q1 price ladder */
-    uint32_t curr_idx = head_idx;
-    OmSlabSlot *curr = head;
-    OmSlabSlot *prev = NULL;
-
-    while (curr_idx != OM_SLOT_IDX_NULL) {
-        if (curr->price == price) {
-            *insert_after = NULL;  /* Not used when found */
-            return curr;  /* Found exact price level */
-        }
-
-        /* For bids: scan descending, stop when price < target
-         * For asks: scan ascending, stop when price > target
-         */
-        if (is_bid && curr->price < price) {
-            *insert_after = prev;  /* Insert after previous */
-            return NULL;
-        }
-        if (!is_bid && curr->price > price) {
-            *insert_after = prev;  /* Insert after previous */
-            return NULL;
-        }
-
-        prev = curr;
-        curr_idx = curr->queue_nodes[OM_Q1_PRICE_LADDER].next_idx;
-        if (curr_idx != OM_SLOT_IDX_NULL) {
-            curr = om_slot_from_idx(&ctx->slab, curr_idx);
+    struct OmPriceNode *node = *price_root(ctx, product_id, is_bid);
+    *insert_after = NULL;
+    while (node) {
+        if (node->price == price) return om_slot_from_idx(&ctx->slab, node->slot);
+        if (price < node->price) {
+            if (is_bid) *insert_after = om_slot_from_idx(&ctx->slab, node->slot);
+            node = node->tree.p[0];
+        } else {
+            if (!is_bid) *insert_after = om_slot_from_idx(&ctx->slab, node->slot);
+            node = node->tree.p[1];
         }
     }
-
-    /* Reached end - insert at tail */
-    *insert_after = prev;
     return NULL;
+
 }
 
 /**
@@ -219,6 +241,7 @@ static void remove_price_level(OmOrderbookContext *ctx, uint16_t product_id,
         *head_idx = level->queue_nodes[OM_Q1_PRICE_LADDER].next_idx;
     }
 
+    price_remove(ctx, product_id, is_bid, level);
     /* Unlink from Q1 */
     om_queue_unlink(&ctx->slab, level, OM_Q1_PRICE_LADDER);
 
@@ -227,6 +250,15 @@ static void remove_price_level(OmOrderbookContext *ctx, uint16_t product_id,
 int om_orderbook_insert(OmOrderbookContext *ctx, uint16_t product_id,
                         OmSlabSlot *order)
 {
+    if (!ctx || !order || product_id >= ctx->max_products || order->org >= ctx->max_org || !order->order_id)
+        return OM_ERR_RECOVERY_FAILED;
+    if (om_hash_get(ctx->order_hashmap, order->order_id)) return OM_ERR_RECOVERY_FAILED;
+    OmOrderEntry entry = {.slot_idx = om_slot_get_idx(&ctx->slab, order), .product_id = product_id};
+    if (!om_hash_insert(ctx->order_hashmap, order->order_id, entry)) return OM_ERR_RECOVERY_FAILED;
+    if (ctx->wal && !om_wal_insert(ctx->wal, order, product_id)) {
+        om_hash_remove(ctx->order_hashmap, order->order_id);
+        return OM_ERR_WAL_WRITE;
+    }
     uint64_t price = order->price;
     bool is_bid = OM_IS_BID(order->flags);
 
@@ -237,6 +269,7 @@ int om_orderbook_insert(OmOrderbookContext *ctx, uint16_t product_id,
     if (!head) {
         /* Insert order as new price level head */
         insert_order_at(ctx, product_id, is_bid, order, insert_after);
+        price_add(ctx, product_id, is_bid, order);
         order->queue_nodes[OM_Q2_TIME_FIFO].prev_idx = OM_SLOT_IDX_NULL;
         order->queue_nodes[OM_Q2_TIME_FIFO].next_idx = OM_SLOT_IDX_NULL;
         head = order;
@@ -260,19 +293,6 @@ int om_orderbook_insert(OmOrderbookContext *ctx, uint16_t product_id,
         }
     }
 
-    /* Add order to hashmap for O(1) lookup by order_id */
-    uint32_t slot_idx = om_slot_get_idx(&ctx->slab, order);
-    OmOrderEntry entry = {
-        .slot_idx = slot_idx,
-        .product_id = product_id
-    };
-    om_hash_insert(ctx->order_hashmap, order->order_id, entry);
-
-    /* Log to WAL if enabled */
-    if (ctx->wal) {
-        om_wal_insert(ctx->wal, order, product_id);
-    }
-
     return 0;
 }
 
@@ -289,7 +309,7 @@ bool om_orderbook_cancel(OmOrderbookContext *ctx, uint32_t order_id)
 
     /* Log to WAL if enabled (before removing from hashmap) */
     if (ctx->wal) {
-        om_wal_cancel(ctx->wal, order_id, slot_idx, product_id);
+        if (!om_wal_cancel(ctx->wal, order_id, slot_idx, product_id)) return false;
     }
 
     OmSlabSlot *order = om_slot_from_idx(&ctx->slab, slot_idx);
@@ -315,6 +335,7 @@ bool om_orderbook_cancel(OmOrderbookContext *ctx, uint32_t order_id)
             OmProductBook *book = &ctx->products[product_id];
             uint32_t *book_head = is_bid ? &book->bid_head_q1 : &book->ask_head_q1;
             OmSlabSlot *next = om_slot_from_idx(&ctx->slab, next_idx);
+            price_promote(ctx, product_id, is_bid, head, next);
 
             /* Promote next to head: update Q2 head tail pointer */
             next->queue_nodes[OM_Q2_TIME_FIFO].prev_idx = head->queue_nodes[OM_Q2_TIME_FIFO].prev_idx;
@@ -484,6 +505,7 @@ bool om_orderbook_remove_slot(OmOrderbookContext *ctx, uint16_t product_id, OmSl
             OmProductBook *book = &ctx->products[product_id];
             uint32_t *book_head = is_bid ? &book->bid_head_q1 : &book->ask_head_q1;
             OmSlabSlot *next = om_slot_from_idx(&ctx->slab, next_idx);
+            price_promote(ctx, product_id, is_bid, head, next);
 
             next->queue_nodes[OM_Q2_TIME_FIFO].prev_idx = head->queue_nodes[OM_Q2_TIME_FIFO].prev_idx;
             if (next->queue_nodes[OM_Q2_TIME_FIFO].next_idx == OM_SLOT_IDX_NULL) {
@@ -567,6 +589,7 @@ bool om_orderbook_unlink_slot(OmOrderbookContext *ctx, uint16_t product_id, OmSl
             OmProductBook *book = &ctx->products[product_id];
             uint32_t *book_head = is_bid ? &book->bid_head_q1 : &book->ask_head_q1;
             OmSlabSlot *next = om_slot_from_idx(&ctx->slab, next_idx);
+            price_promote(ctx, product_id, is_bid, head, next);
 
             next->queue_nodes[OM_Q2_TIME_FIFO].prev_idx = head->queue_nodes[OM_Q2_TIME_FIFO].prev_idx;
             if (next->queue_nodes[OM_Q2_TIME_FIFO].next_idx == OM_SLOT_IDX_NULL) {
@@ -784,6 +807,9 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
         return OM_ERR_WAL_OPEN;
     }
 
+    OmWal *saved_wal = ctx->wal;
+    ctx->wal = NULL; /* Restore is never a fresh mutation. */
+
     /* Replay all records */
     OmWalType type;
     void *data;
@@ -801,8 +827,19 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
                 OmWalInsert rec;
                 memcpy(&rec, data, sizeof(OmWalInsert));
                 
+                if (rec.user_data_size > ctx->slab.config.user_data_size ||
+                    rec.aux_data_size > ctx->slab.config.aux_data_size ||
+                    rec.product_id >= ctx->max_products || rec.org >= ctx->max_org || !rec.order_id) {
+                    ctx->wal = saved_wal;
+                    om_wal_replay_close(&replay);
+                    return OM_ERR_RECOVERY_FAILED;
+                }
+                /* Preserve exhausted allocation even when the highest id was canceled. */
+                if (ctx->slab.next_order_id && rec.order_id >= ctx->slab.next_order_id)
+                    ctx->slab.next_order_id = rec.order_id == UINT32_MAX ? 0 : rec.order_id + 1;
                 OmSlabSlot *slot = om_slab_alloc(&ctx->slab);
                 if (!slot) {
+                    ctx->wal = saved_wal;
                     om_wal_replay_close(&replay);
                     return OM_ERR_SLAB_FULL;
                 }
@@ -831,6 +868,7 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
                 
                 if (om_orderbook_insert(ctx, rec.product_id, slot) != 0) {
                     om_slab_free(&ctx->slab, slot);
+                    ctx->wal = saved_wal;
                     om_wal_replay_close(&replay);
                     return OM_ERR_RECOVERY_FAILED;
                 }
@@ -865,18 +903,24 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
                 OmWalMatch rec;
                 memcpy(&rec, data, sizeof(OmWalMatch));
                 
+                if (!rec.maker_id || !rec.taker_id || !rec.volume) {
+                    ctx->wal = saved_wal;
+                    om_wal_replay_close(&replay);
+                    return OM_ERR_RECOVERY_FAILED;
+                }
+                uint32_t highest = rec.maker_id > rec.taker_id ? rec.maker_id : rec.taker_id;
+                if (ctx->slab.next_order_id && highest >= ctx->slab.next_order_id)
+                    ctx->slab.next_order_id = highest == UINT32_MAX ? 0 : highest + 1;
                 OmOrderEntry *entry = om_hash_get(ctx->order_hashmap, rec.maker_id);
-                if (entry) {
-                    OmSlabSlot *slot = om_slot_from_idx(&ctx->slab, entry->slot_idx);
-                    if (slot && slot->volume_remain >= rec.volume) {
-                        slot->volume_remain -= rec.volume;
-                        
-                        if (slot->volume_remain == 0) {
-                            om_orderbook_cancel(ctx, rec.maker_id);
-            }
-        }
-    }
-                
+                OmSlabSlot *slot = entry ? om_slot_from_idx(&ctx->slab, entry->slot_idx) : NULL;
+                if (!slot || slot->volume_remain < rec.volume) {
+                    ctx->wal = saved_wal;
+                    om_wal_replay_close(&replay);
+                    return OM_ERR_RECOVERY_FAILED;
+                }
+                slot->volume_remain -= rec.volume;
+                if (slot->volume_remain == 0) om_orderbook_cancel(ctx, rec.maker_id);
+
                 if (stats) {
                     stats->records_match++;
                     stats->last_sequence = sequence;
@@ -918,8 +962,10 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
                 if (entry) {
                     OmSlabSlot *slot = om_slot_from_idx(&ctx->slab, entry->slot_idx);
                     if (slot && (slot->flags & OM_STATUS_MASK) == OM_STATUS_DEACTIVATED) {
-                        slot->flags = OM_SET_STATUS(slot->flags, OM_STATUS_NEW);
-                        om_orderbook_insert(ctx, entry->product_id, slot);
+                        // Activation resumes matching as a taker; subsequent MATCH
+                        // and INSERT records describe the resulting state.
+                        om_hash_remove(ctx->order_hashmap, rec.order_id);
+                        om_slab_free(&ctx->slab, slot);
                     }
                 }
 
@@ -944,7 +990,8 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
     }
 
     if (replay_status < 0) {
-        om_wal_replay_close(&replay);
+        ctx->wal = saved_wal;
+                    om_wal_replay_close(&replay);
         /* Propagate the specific failure (e.g. OM_ERR_WAL_TRUNCATED for a torn
          * tail vs OM_ERR_WAL_CRC_MISMATCH for corruption) so callers can treat a
          * benign crash-truncated tail differently from real corruption. Still a
@@ -952,6 +999,7 @@ int om_orderbook_recover_from_wal(OmOrderbookContext *ctx,
         return replay_status;
     }
 
-    om_wal_replay_close(&replay);
+    ctx->wal = saved_wal;
+                    om_wal_replay_close(&replay);
     return 0;
 }

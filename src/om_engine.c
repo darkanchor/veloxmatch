@@ -206,12 +206,8 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
                 if (OM_UNLIKELY(allowed == OM_CAN_MATCH_CANCEL_MAKER ||
                                 allowed == OM_CAN_MATCH_CANCEL_BOTH)) {
                     uint32_t maker_slot_idx = om_slot_get_idx(slab, maker);
-                    if (has_on_cancel) {
-                        cb->on_cancel(maker, cb->user_ctx);
-                    }
-                    if (wal) {
-                        om_wal_cancel(wal, maker->order_id, maker_slot_idx, product_id);
-                    }
+                    if (wal && !om_wal_cancel(wal, maker->order_id, maker_slot_idx, product_id)) return OM_ERR_WAL_WRITE;
+                    if (has_on_cancel) cb->on_cancel(maker, cb->user_ctx);
                     om_orderbook_remove_slot(book, product_id, maker);
                     maker_idx = next_maker_idx;
                     if (allowed == OM_CAN_MATCH_CANCEL_BOTH) {
@@ -223,12 +219,6 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
                 }
                 if (OM_UNLIKELY(allowed == OM_CAN_MATCH_DECREMENT_CANCEL)) {
                     uint64_t dec_qty = matchable;
-                    maker->volume_remain -= dec_qty;
-                    taker_remaining -= dec_qty;
-                    taker->volume_remain = taker_remaining;
-                    if (has_on_decrement_cancel) {
-                        cb->on_decrement_cancel(maker, taker, dec_qty, cb->user_ctx);
-                    }
                     if (wal) {
                         OmWalMatch rec = {
                             .maker_id = maker->order_id,
@@ -239,8 +229,15 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
                             .product_id = product_id,
                             .reserved = {0, 0, 0}
                         };
-                        om_wal_match(wal, &rec);
+                        if (!om_wal_match(wal, &rec)) return OM_ERR_WAL_WRITE;
                     }
+                    maker->volume_remain -= dec_qty;
+                    taker_remaining -= dec_qty;
+                    taker->volume_remain = taker_remaining;
+                    if (has_on_decrement_cancel) {
+                        cb->on_decrement_cancel(maker, taker, dec_qty, cb->user_ctx);
+                    }
+
                     if (OM_UNLIKELY(maker->volume_remain == 0)) {
                         om_orderbook_remove_slot(book, product_id, maker);
                         maker_idx = next_maker_idx;
@@ -264,6 +261,18 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
                 continue;
             }
 
+            if (wal) {
+                OmWalMatch rec = {
+                    .maker_id = maker->order_id,
+                    .taker_id = taker->order_id,
+                    .price = level_price,
+                    .volume = matchable,
+                    .timestamp_ns = match_ts_ns,
+                    .product_id = product_id,
+                    .reserved = {0, 0, 0}
+                };
+                if (!om_wal_match(wal, &rec)) return OM_ERR_WAL_WRITE;
+            }
             maker->volume_remain -= matchable;
             taker_remaining -= matchable;
             taker->volume_remain = taker_remaining;
@@ -277,18 +286,7 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
                 cb->on_deal(maker, taker, level_price, matchable, cb->user_ctx);
             }
 
-            if (wal) {
-                OmWalMatch rec = {
-                    .maker_id = maker->order_id,
-                    .taker_id = taker->order_id,
-                    .price = level_price,
-                    .volume = matchable,
-                    .timestamp_ns = match_ts_ns,
-                    .product_id = product_id,
-                    .reserved = {0, 0, 0}
-                };
-                om_wal_match(wal, &rec);
-            }
+
 
             if (OM_UNLIKELY(maker->volume_remain == 0)) {
                 if (has_on_filled) {
@@ -326,11 +324,9 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
         }
     }
 
-    if (has_on_booked) {
-        cb->on_booked(taker, cb->user_ctx);
-    }
-
-    return om_orderbook_insert(book, product_id, taker);
+    int insert_rc = om_orderbook_insert(book, product_id, taker);
+    if (insert_rc == 0 && has_on_booked) cb->on_booked(taker, cb->user_ctx);
+    return insert_rc;
 }
 
 bool om_engine_cancel(OmEngine *engine, uint32_t order_id)
@@ -350,11 +346,10 @@ bool om_engine_cancel(OmEngine *engine, uint32_t order_id)
         return false;
     }
 
-    if (engine->callbacks.on_cancel) {
-        engine->callbacks.on_cancel(order, engine->callbacks.user_ctx);
-    }
+    if (book->wal && !om_wal_cancel(book->wal, order_id, entry->slot_idx, entry->product_id)) return false;
+    if (engine->callbacks.on_cancel) engine->callbacks.on_cancel(order, engine->callbacks.user_ctx);
+    return om_orderbook_remove_slot(book, entry->product_id, order);
 
-    return om_orderbook_cancel(book, order_id);
 }
 
 bool om_engine_deactivate(OmEngine *engine, uint32_t order_id)
@@ -377,15 +372,14 @@ bool om_engine_deactivate(OmEngine *engine, uint32_t order_id)
         return false;
     }
 
+    if (engine->wal && !om_wal_deactivate(engine->wal, order_id, entry->slot_idx, entry->product_id)) return false;
+
     if (!om_orderbook_unlink_slot(&engine->orderbook, entry->product_id, order)) {
         return false;
     }
 
     order->flags = OM_SET_STATUS(order->flags, OM_STATUS_DEACTIVATED);
 
-    if (engine->wal) {
-        om_wal_deactivate(engine->wal, order_id, entry->slot_idx, entry->product_id);
-    }
 
     return true;
 }
@@ -410,13 +404,13 @@ bool om_engine_activate(OmEngine *engine, uint32_t order_id)
         return false;
     }
 
+    uint16_t product_id = entry->product_id;
+    if (engine->wal && !om_wal_activate(engine->wal, order_id, entry->slot_idx, product_id)) return false;
+    om_hash_remove(engine->orderbook.order_hashmap, order_id);
     order->flags = OM_SET_STATUS(order->flags, OM_STATUS_NEW);
-
-    if (engine->wal) {
-        om_wal_activate(engine->wal, order_id, entry->slot_idx, entry->product_id);
-    }
-
-    return om_engine_match(engine, entry->product_id, order) == 0;
+    int rc = om_engine_match(engine, product_id, order);
+    if (rc == 0 && order->volume_remain == 0) om_slab_free(&engine->orderbook.slab, order);
+    return rc == 0;
 }
 
 uint32_t om_engine_cancel_org_product(OmEngine *engine, uint16_t product_id, uint16_t org_id)

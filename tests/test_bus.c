@@ -59,6 +59,53 @@ START_TEST(test_bus_rejects_unaligned_slot_size) {
 }
 END_TEST
 
+/* Cold consumers must replay retained history and detect an incomplete prefix. */
+START_TEST(test_bus_rewind_retained) {
+    const unsigned counts[] = {2, 10};
+    for (size_t test = 0; test < sizeof(counts) / sizeof(counts[0]); test++) {
+        const char *name = test_shm_name("retained");
+        shm_unlink(name);
+        OmBusStream *stream = NULL;
+        OmBusStreamConfig cfg = {
+            .stream_name = name,
+            .capacity = 4,
+            .slot_size = 512,
+            .max_consumers = 2,
+            .flags = OM_BUS_FLAG_CRC | OM_BUS_FLAG_BROADCAST,
+        };
+        ck_assert_int_eq(om_bus_stream_create(&stream, &cfg), 0);
+        for (unsigned i = 0; i < counts[test]; i++) {
+            uint32_t payload = i;
+            ck_assert_int_eq(om_bus_stream_publish(stream, 0, 1,
+                                                  &payload, sizeof(payload)), 0);
+        }
+        OmBusEndpoint *ep = NULL;
+        OmBusEndpointConfig endpoint_cfg = {
+            .stream_name = name,
+            .consumer_index = 0,
+            .zero_copy = false,
+        };
+        ck_assert_int_eq(om_bus_endpoint_open(&ep, &endpoint_cfg), 0);
+        OmBusRecord record;
+        ck_assert_int_eq(om_bus_endpoint_poll(ep, &record), 0);
+        ck_assert_int_eq(om_bus_endpoint_rewind_retained(ep), counts[test] == 2);
+        unsigned retained = counts[test] < 4 ? counts[test] : 4;
+        for (unsigned i = counts[test] - retained; i < counts[test]; i++) {
+            ck_assert_int_eq(om_bus_endpoint_poll(ep, &record), 1);
+            ck_assert_uint_eq(record.payload_len, sizeof(uint32_t));
+            uint32_t payload;
+            memcpy(&payload, record.payload, sizeof(payload));
+            ck_assert_uint_eq(payload, i);
+        }
+        ck_assert_int_eq(om_bus_endpoint_poll(ep, &record), 0);
+        om_bus_endpoint_close(ep);
+        om_bus_stream_destroy(stream);
+        shm_unlink(name);
+    }
+    ck_assert_int_eq(om_bus_endpoint_rewind_retained(NULL), 0);
+}
+END_TEST
+
 /* ---- Test: single publish + poll roundtrip ---- */
 START_TEST(test_bus_publish_poll) {
     const char *name = test_shm_name("pubpoll");
@@ -2285,6 +2332,7 @@ Suite *bus_suite(void) {
     Suite *s = suite_create("Bus");
     TCase *tc = tcase_create("SHM");
     tcase_add_test(tc, test_bus_create_destroy);
+    tcase_add_test(tc, test_bus_rewind_retained);
     tcase_add_test(tc, test_bus_rejects_unaligned_slot_size);
     tcase_add_test(tc, test_bus_publish_poll);
     tcase_add_test(tc, test_bus_batch);

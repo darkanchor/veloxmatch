@@ -38,6 +38,9 @@ typedef enum OmBusError {
     OM_ERR_BUS_ALIGNMENT        = -825, /**< SHM layout alignment invalid */
 } OmBusError;
 
+/* 0 empty, 1 record, 2 lap, 3 epoch, 4 CRC, 5 other failure. */
+int om_bus_poll_classify(int rc);
+
 /**
  * Get human-readable error string for bus error codes.
  *

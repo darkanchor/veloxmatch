@@ -14,7 +14,9 @@ OmHashMap *om_hash_create(size_t initial_capacity) {
     }
 
     if (initial_capacity > 0) {
-        kh_resize(entry, map->hash, initial_capacity);
+        if (kh_resize(entry, map->hash, initial_capacity) < 0) {
+            kh_destroy(entry, map->hash); free(map); return NULL;
+        }
     }
 
     return map;

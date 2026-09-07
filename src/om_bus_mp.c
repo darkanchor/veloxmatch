@@ -240,6 +240,17 @@ int om_bus_mp_producer_open(OmBusMpProducer *producer, void *memory, uint32_t pr
     return 0;
 }
 
+int om_bus_mp_validate_mapping(const void *memory, size_t size, const OmBusMpConfig *cfg) {
+    if (!memory || !cfg || size < sizeof(OmBusMpHeader)) return OM_BUS_MP_ERR_INIT;
+    const OmBusMpHeader *h = memory;
+    const uint64_t timeout = cfg->skip_timeout_ns ? cfg->skip_timeout_ns : OM_BUS_MP_DEFAULT_SKIP_TIMEOUT_NS;
+    if (h->meta.magic != OM_BUS_MP_MAGIC || h->meta.version != OM_BUS_MP_VERSION ||
+        h->meta.capacity != cfg->capacity || h->meta.slot_size != cfg->slot_size ||
+        h->meta.max_producers != cfg->max_producers || h->meta.skip_timeout_ns != timeout ||
+        om_bus_mp_size(cfg) != size) return OM_BUS_MP_ERR_INIT;
+    return 0;
+}
+
 int om_bus_mp_consumer_open(OmBusMpConsumer *consumer, void *memory) {
     if (!consumer || !memory) return OM_BUS_MP_ERR_INIT;
     OmBusMpHeader *hdr = (OmBusMpHeader *)memory;
@@ -344,7 +355,7 @@ int om_bus_mp_publish(OmBusMpProducer *producer, const void *payload,
     return rc;
 }
 
-int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record) {
+static int om_bus_mp_poll_impl(OmBusMpConsumer *consumer, OmBusMpRecord *record, void *copy, size_t capacity) {
     if (!consumer || !record) return OM_BUS_MP_ERR_INIT;
 
     OmBusMpHeader *hdr = (OmBusMpHeader *)consumer->base;
@@ -359,6 +370,15 @@ int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record) {
         record->producer_id = slot->producer_id;
         record->payload_len = slot->payload_len;
         record->payload = (const char *)slot + OM_BUS_MP_SLOT_HEADER_SIZE;
+        if (copy) {
+            if (record->payload_len <= capacity &&
+                record->payload_len <= consumer->slot_size - OM_BUS_MP_SLOT_HEADER_SIZE) {
+                memcpy(copy, record->payload, record->payload_len);
+                record->payload = copy;
+            } else {
+                record->payload = NULL; /* delivered malformed; never read outside slot */
+            }
+        }
 
         atomic_store_explicit(&slot->seq, pos + consumer->capacity, memory_order_release);
         atomic_store_explicit(&hdr->consumer_cursor.dequeue_pos, pos + 1U,
@@ -438,6 +458,15 @@ int om_bus_mp_wait(OmBusMpConsumer *consumer, uint64_t timeout_ns) {
     if (errno == ETIMEDOUT) return OM_BUS_MP_WAIT_TIMEOUT;
     if (errno == EINTR) return OM_BUS_MP_WAIT_INTERRUPTED;
     return OM_BUS_MP_WAIT_READY;
+}
+
+int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record) {
+    return om_bus_mp_poll_impl(consumer, record, NULL, 0);
+}
+
+int om_bus_mp_poll_copy(OmBusMpConsumer *consumer, OmBusMpRecord *record, void *copy, size_t capacity) {
+    if (!copy || !capacity) return OM_BUS_MP_ERR_INIT;
+    return om_bus_mp_poll_impl(consumer, record, copy, capacity);
 }
 
 int om_bus_mp_poll_batch(OmBusMpConsumer *consumer, OmBusMpRecord *records,

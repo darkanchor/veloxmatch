@@ -6,6 +6,9 @@ typedef struct TestMatchCtx {
     uint64_t can_match_calls;
     uint64_t on_match_calls;
     uint64_t on_deal_calls;
+    uint32_t dealt_makers[64];
+    uint64_t dealt_prices[64];
+    uint64_t dealt_quantities[64];
     uint64_t on_booked_calls;
     uint64_t on_filled_calls;
     uint64_t on_cancel_calls;
@@ -51,6 +54,10 @@ static void test_on_deal(const OmSlabSlot *maker, const OmSlabSlot *taker,
     (void)price;
     (void)qty;
     TestMatchCtx *ctx = (TestMatchCtx *)user_ctx;
+    ck_assert_uint_lt(ctx->on_deal_calls, 64);
+    ctx->dealt_makers[ctx->on_deal_calls] = maker ? maker->order_id : 0;
+    ctx->dealt_prices[ctx->on_deal_calls] = price;
+    ctx->dealt_quantities[ctx->on_deal_calls] = qty;
     ctx->on_deal_calls++;
 }
 
@@ -403,6 +410,72 @@ START_TEST(test_engine_match_same_price_fifo)
 }
 END_TEST
 
+/* Compare execution order with a simple price/arrival reference on both sides. */
+START_TEST(test_engine_strict_price_time_after_partial_and_cancel)
+{
+    for (unsigned bid = 0; bid < 2; bid++) {
+        OmEngine engine;
+        TestMatchCtx ctx = {0};
+        ctx.pre_booked_allow = true;
+        init_engine_with_ctx(&engine, &ctx);
+        uint64_t prices[10] = {103, 100, 102, 101, 100, 99, 104, 100, 100, 0};
+        uint64_t remaining[10] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 1};
+        uint32_t ids[10];
+        const uint16_t maker_flags = (bid ? OM_SIDE_BID : OM_SIDE_ASK) | OM_TYPE_LIMIT;
+        const uint16_t taker_flags = (bid ? OM_SIDE_ASK : OM_SIDE_BID) | OM_TYPE_LIMIT;
+        const uint64_t limit = bid ? 99 : 104;
+        for (unsigned i = 0; i < 8; i++) {
+            OmSlabSlot *maker = make_order(&engine, prices[i], remaining[i], maker_flags);
+            ids[i] = maker->order_id;
+            ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, maker), 0);
+        }
+        /* Cancel a FIFO head, then append a newer order at that same price. */
+        ck_assert(om_engine_cancel(&engine, ids[1]));
+        remaining[1] = 0;
+        OmSlabSlot *replacement = make_order(&engine, prices[8], remaining[8], maker_flags);
+        ids[8] = replacement->order_id;
+        ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, replacement), 0);
+        unsigned best = bid ? 6 : 5;
+        OmSlabSlot *partial = make_order(&engine, limit, 2, taker_flags);
+        ck_assert_int_eq(om_engine_match(&engine, 0, partial), 0);
+        ck_assert_uint_eq(ctx.on_deal_calls, 1);
+        ck_assert_uint_eq(ctx.dealt_makers[0], ids[best]);
+        ck_assert_uint_eq(ctx.dealt_prices[0], prices[best]);
+        ck_assert_uint_eq(ctx.dealt_quantities[0], 2);
+        remaining[best] -= 2;
+        om_slab_free(&engine.orderbook.slab, partial);
+        /* A later arrival must remain behind the partially filled oldest order. */
+        prices[9] = prices[best];
+        OmSlabSlot *late = make_order(&engine, prices[9], remaining[9], maker_flags);
+        ids[9] = late->order_id;
+        ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, late), 0);
+        uint64_t total = 0;
+        for (unsigned i = 0; i < 10; i++) total += remaining[i];
+        ctx.on_deal_calls = 0;
+        OmSlabSlot *sweep = make_order(&engine, limit, total, taker_flags);
+        ck_assert_int_eq(om_engine_match(&engine, 0, sweep), 0);
+        ck_assert_uint_eq(ctx.on_deal_calls, 9);
+        for (unsigned execution = 0; execution < 9; execution++) {
+            unsigned next = 10;
+            for (unsigned i = 0; i < 10; i++) {
+                if (!remaining[i]) continue;
+                if (next == 10 || (bid ? prices[i] > prices[next] : prices[i] < prices[next]))
+                    next = i;
+                /* Equal prices deliberately retain the earlier insertion index. */
+            }
+            ck_assert_uint_lt(next, 10);
+            ck_assert_uint_eq(ctx.dealt_makers[execution], ids[next]);
+            ck_assert_uint_eq(ctx.dealt_prices[execution], prices[next]);
+            ck_assert_uint_eq(ctx.dealt_quantities[execution], remaining[next]);
+            remaining[next] = 0;
+        }
+        ck_assert_uint_eq(sweep->volume_remain, 0);
+        om_slab_free(&engine.orderbook.slab, sweep);
+        om_engine_destroy(&engine);
+    }
+}
+END_TEST
+
 START_TEST(test_engine_match_can_match_cap)
 {
     OmEngine engine;
@@ -676,6 +749,7 @@ Suite *engine_suite(void)
     tcase_add_test(tc_core, test_engine_match_price_not_cross);
     tcase_add_test(tc_core, test_engine_match_multi_maker_levels);
     tcase_add_test(tc_core, test_engine_match_same_price_fifo);
+    tcase_add_test(tc_core, test_engine_strict_price_time_after_partial_and_cancel);
     tcase_add_test(tc_core, test_engine_match_can_match_cap);
     tcase_add_test(tc_core, test_engine_match_can_match_zero);
     tcase_add_test(tc_core, test_engine_match_can_match_skip_best);

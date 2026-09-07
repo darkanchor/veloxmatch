@@ -101,6 +101,8 @@ typedef struct OmBusMpStats {
 
 size_t om_bus_mp_size(const OmBusMpConfig *config);
 int om_bus_mp_init(void *memory, size_t memory_size, const OmBusMpConfig *config);
+/** Validate the full recovered layout before attaching, without modifying it. */
+int om_bus_mp_validate_mapping(const void *memory, size_t size, const OmBusMpConfig *config);
 
 int om_bus_mp_producer_open(OmBusMpProducer *producer, void *memory, uint32_t producer_id);
 int om_bus_mp_consumer_open(OmBusMpConsumer *consumer, void *memory);
@@ -111,6 +113,9 @@ int om_bus_mp_commit(OmBusMpProducer *producer, OmBusMpClaim *claim);
 int om_bus_mp_publish(OmBusMpProducer *producer, const void *payload,
                       uint16_t payload_len, uint64_t *sequence_out);
 int om_bus_mp_poll(OmBusMpConsumer *consumer, OmBusMpRecord *record);
+/* Copy under consumer ownership, before releasing the slot to producers. */
+int om_bus_mp_poll_copy(OmBusMpConsumer *consumer, OmBusMpRecord *record,
+                        void *copy, size_t capacity);
 
 /**
  * Wait until the ring is likely non-empty, or until timeout_ns elapses.

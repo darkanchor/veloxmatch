@@ -458,6 +458,8 @@ void om_bus_stream_destroy(OmBusStream *stream) {
  * ============================================================================ */
 
 struct OmBusEndpoint {
+    ino_t shm_ino;
+    dev_t shm_dev;
     void *map;                  /* mmap base pointer */
     size_t map_size;            /* mmap region length */
     OmBusShmHeader *hdr;
@@ -524,6 +526,8 @@ int om_bus_endpoint_open(OmBusEndpoint **out, const OmBusEndpointConfig *config)
         return OM_ERR_BUS_INIT;
     }
 
+    ep->shm_ino = st.st_ino;
+    ep->shm_dev = st.st_dev;
     ep->map = map;
     ep->map_size = total;
     ep->hdr = hdr;
@@ -624,6 +628,8 @@ int om_bus_endpoint_poll(OmBusEndpoint *ep, OmBusRecord *rec) {
     uint32_t crc32 = slot->crc32;
 
     const void *payload_src = (const char *)slot + OM_BUS_SLOT_HEADER_SIZE;
+
+    if (payload_len > ep->slot_size - OM_BUS_SLOT_HEADER_SIZE) return OM_ERR_BUS_RECORD_TOO_LARGE;
 
     /* Deliver payload */
     if (ep->zero_copy) {
@@ -815,4 +821,56 @@ int om_bus_endpoint_load_cursor(const char *path, uint64_t *wal_seq_out) {
 
     *wal_seq_out = wal_seq;
     return 0;
+}
+
+/* Stable classification boundary; Zig consumers do not copy native errno values. */
+int om_bus_poll_classify(int rc) {
+    switch (rc) {
+        case 0: case OM_ERR_BUS_EMPTY: return 0;
+        case 1: return 1;
+        case OM_ERR_BUS_LAPPED: return 2;
+        case OM_ERR_BUS_EPOCH_CHANGED: return 3;
+        case OM_ERR_BUS_CRC_MISMATCH: return 4;
+        default: return 5;
+    }
+}
+
+uint64_t om_bus_endpoint_position(const OmBusEndpoint *ep) {
+    return atomic_load_explicit(&ep->tails[ep->consumer_index].tail, memory_order_acquire);
+}
+
+/* Scheduled identity check, never a per-record open/stat. */
+int om_bus_endpoint_is_current(const OmBusEndpoint *ep, const char *name) {
+    int fd = shm_open(name, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    struct stat st;
+    int ok = fstat(fd, &st) == 0 && st.st_ino == ep->shm_ino && st.st_dev == ep->shm_dev;
+    close(fd);
+    return ok;
+}
+
+/* Peek backwards from the captured attach position without advancing input.
+ * The ordinary poll owner must be idle. Used only to establish startup's
+ * required durable frontier; a lap while peeking fails recovery. */
+int om_bus_endpoint_peek_previous(OmBusEndpoint *ep, uint64_t distance, OmBusRecord *rec) {
+    uint64_t tail = atomic_load_explicit(&ep->tails[ep->consumer_index].tail, memory_order_acquire);
+    if (!distance || distance > tail || distance > ep->capacity) return 0;
+    uint64_t expected = ep->expected_wal_seq;
+    atomic_store_explicit(&ep->tails[ep->consumer_index].tail, tail - distance, memory_order_release);
+    ep->expected_wal_seq = 0;
+    int rc = om_bus_endpoint_poll(ep, rec);
+    atomic_store_explicit(&ep->tails[ep->consumer_index].tail, tail, memory_order_release);
+    ep->expected_wal_seq = expected;
+    return rc;
+}
+
+/* Gateway cache bootstrap: replay only the bounded retained generation. Return
+ * one iff its entire prefix is still retained, otherwise require a snapshot. */
+int om_bus_endpoint_rewind_retained(OmBusEndpoint *ep) {
+    if (!ep) return 0;
+    uint64_t head = atomic_load_explicit(&ep->hdr->head.value, memory_order_acquire);
+    uint64_t start = head > ep->capacity ? head - ep->capacity : 0;
+    atomic_store_explicit(&ep->tails[ep->consumer_index].tail, start, memory_order_release);
+    ep->expected_wal_seq = 0;
+    return start == 0;
 }

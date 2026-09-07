@@ -99,83 +99,21 @@ static inline size_t wal_payload_size(OmWalType type, size_t user_data_size, siz
     }
 }
 
-static uint64_t wal_scan_for_last_sequence(const char *filename, const OmWalConfig *config) {
-    int fd = open(filename, O_RDONLY);
-    if (fd < 0) return 0;
-
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size == 0) {
-        close(fd);
-        return 0;
+/* Sequence discovery shares the integrity/framing reader with recovery. */
+static int wal_scan_for_last_sequence(const char *filename, const OmWalConfig *config,
+                                     uint64_t *last_seq, uint32_t *last_file) {
+    OmWalReplay replay;
+    int rc = om_wal_replay_init_with_config(&replay, filename, config);
+    if (rc != 0) return rc;
+    OmWalType type; void *data; uint64_t seq; size_t len;
+    *last_seq = 0;
+    *last_file = config->file_index;
+    while ((rc = om_wal_replay_next(&replay, &type, &data, &seq, &len)) == 1) {
+        *last_seq = seq;
+        *last_file = replay.file_index;
     }
-
-    size_t buf_size = 64 * 1024;
-    uint8_t *buf = malloc(buf_size);
-    if (!buf) {
-        close(fd);
-        return 0;
-    }
-
-    uint64_t last_seq = 0;
-    size_t valid = 0;
-    size_t pos = 0;
-    bool eof = false;
-    size_t crc_size = config->enable_crc32 ? WAL_CRC32_SIZE : 0;
-
-    while (!eof) {
-        if (pos + WAL_HEADER_SIZE > valid) {
-            size_t remaining = valid - pos;
-            if (remaining > 0) {
-                memmove(buf, buf + pos, remaining);
-            }
-            ssize_t n = read(fd, buf + remaining, buf_size - remaining);
-            if (n <= 0) {
-                eof = true;
-                break;
-            }
-            valid = remaining + (size_t)n;
-            pos = 0;
-            if (pos + WAL_HEADER_SIZE > valid) {
-                break;
-            }
-        }
-
-        OmWalHeader hdr;
-        memcpy(&hdr, buf + pos, sizeof(hdr));
-        uint64_t packed = hdr.seq_type_len;
-        uint64_t seq = om_wal_header_seq(packed);
-        uint8_t type = om_wal_header_type(packed);
-        uint16_t payload_len = om_wal_header_len(packed);
-
-        if (type < OM_WAL_INSERT || type > OM_WAL_ACTIVATE) {
-            break;
-        }
-
-        size_t record_size = WAL_HEADER_SIZE + payload_len + crc_size;
-        if (pos + record_size > valid) {
-            size_t remaining = valid - pos;
-            if (remaining > 0) {
-                memmove(buf, buf + pos, remaining);
-            }
-            ssize_t n = read(fd, buf + remaining, buf_size - remaining);
-            if (n <= 0) {
-                eof = true;
-                break;
-            }
-            valid = remaining + (size_t)n;
-            pos = 0;
-            if (pos + record_size > valid) {
-                break;
-            }
-        }
-
-        last_seq = seq;
-        pos += record_size;
-    }
-
-    free(buf);
-    close(fd);
-    return last_seq;
+    om_wal_replay_close(&replay);
+    return rc;
 }
 
 static int wal_open_file(OmWal *wal, const char *path) {
@@ -211,6 +149,7 @@ int om_wal_init(OmWal *wal, const OmWalConfig *config) {
     }
 
     memset(wal, 0, sizeof(OmWal));
+    wal->fd = -1;
     wal->config = *config;
     wal->slab = NULL;
 
@@ -246,17 +185,27 @@ int om_wal_init(OmWal *wal, const OmWalConfig *config) {
     }
 
     struct stat st;
-    if (fstat(wal->fd, &st) == 0) {
-        wal->file_offset = st.st_size;
-        if (st.st_size > 0) {
-            uint64_t last_seq = wal_scan_for_last_sequence(config->filename, &wal->config);
-            wal->sequence = (last_seq > 0) ? last_seq + 1 : 1;
-        } else {
-            wal->sequence = 1;
-        }
-    } else {
-        wal->sequence = 1;
+    uint64_t last_seq = 0;
+    uint32_t last_file = wal->file_index;
+    int rc = fstat(wal->fd, &st) == 0 ? 0 : OM_ERR_WAL_READ;
+    if (rc == 0 && (st.st_size > 0 || config->filename_pattern))
+        rc = wal_scan_for_last_sequence(config->filename, &wal->config, &last_seq, &last_file);
+    if (rc == 0 && last_file != wal->file_index) {
+        close(wal->fd);
+        wal->fd = -1;
+        wal->file_index = last_file;
+        rc = wal_open_indexed(wal, last_file);
+        if (rc == 0 && fstat(wal->fd, &st) != 0) rc = OM_ERR_WAL_READ;
     }
+    if (rc != 0) {
+        if (wal->fd >= 0) close(wal->fd);
+        free(wal->buffer_unaligned);
+        wal->buffer_unaligned = NULL;
+        wal->fd = -1;
+        return rc;
+    }
+    wal->file_offset = st.st_size;
+    wal->sequence = last_seq + 1;
 
     return 0;
 }
@@ -298,8 +247,13 @@ void om_wal_close(OmWal *wal) {
 }
 
 static uint64_t wal_append(OmWal *wal, OmWalType type, const void *data, size_t data_size) {
+    if (wal->last_error) return 0;
     size_t crc_size = wal->config.enable_crc32 ? WAL_CRC32_SIZE : 0;
     size_t total_size = WAL_HEADER_SIZE + data_size + crc_size;
+    if (data_size > UINT16_MAX || total_size > wal->buffer_size || wal->sequence >= (UINT64_C(1) << 40)) {
+        wal->last_error = OM_ERR_WAL_WRITE;
+        return 0;
+    }
     
     if (wal->buffer_used + total_size > wal->buffer_size) {
         if (om_wal_flush(wal) != 0) {
@@ -336,12 +290,16 @@ uint64_t om_wal_insert(OmWal *wal, struct OmSlabSlot *slot, uint16_t product_id)
         return 0;
     }
 
+    if (wal->last_error) return 0;
     size_t user_data_size = wal->config.user_data_size;
     size_t aux_data_size = wal->config.aux_data_size;
     size_t crc_size = wal->config.enable_crc32 ? WAL_CRC32_SIZE : 0;
     size_t data_size = sizeof(OmWalInsert) + user_data_size + aux_data_size;
     size_t total_size = WAL_HEADER_SIZE + data_size + crc_size;
-    total_size = (total_size + 7) & ~7;
+    if (data_size > UINT16_MAX || total_size > wal->buffer_size || wal->sequence >= (UINT64_C(1) << 40)) {
+        wal->last_error = OM_ERR_WAL_WRITE;
+        return 0;
+    }
 
     if (wal->buffer_used + total_size > wal->buffer_size) {
         if (om_wal_flush(wal) != 0) {
@@ -457,6 +415,8 @@ uint64_t om_wal_match(OmWal *wal, const OmWalMatch *rec) {
 
 /* Write buffer to disk - this is the only syscall in hot path */
 int om_wal_flush(OmWal *wal) {
+    if (!wal) return OM_ERR_NULL_PARAM;
+    if (wal->last_error) return wal->last_error;
     if (wal->buffer_used == 0) {
         return 0;
     }
@@ -473,10 +433,11 @@ int om_wal_flush(OmWal *wal) {
     /* Expand to next WAL file if needed */
     if (wal->config.filename_pattern && wal->config.wal_max_file_size > 0) {
         if (wal->file_offset + write_size > wal->config.wal_max_file_size) {
+            if (fsync(wal->fd) != 0) return wal->last_error = OM_ERR_WAL_FSYNC;
             close(wal->fd);
             wal->file_index++;
             if (wal_open_indexed(wal, wal->file_index) != 0) {
-                return OM_ERR_WAL_OPEN;
+                return wal->last_error = OM_ERR_WAL_OPEN;
             }
             wal->file_offset = 0;
         }
@@ -485,7 +446,7 @@ int om_wal_flush(OmWal *wal) {
     /* Write to file */
     ssize_t written = write(wal->fd, wal->buffer, write_size);
     if (written != (ssize_t)write_size) {
-        return OM_ERR_WAL_WRITE;
+        return wal->last_error = OM_ERR_WAL_WRITE;
     }
 
     wal->file_offset += write_size;
@@ -496,6 +457,8 @@ int om_wal_flush(OmWal *wal) {
 
 /* Force fsync for durability */
 int om_wal_fsync(OmWal *wal) {
+    if (!wal) return OM_ERR_NULL_PARAM;
+    if (wal->last_error) return wal->last_error;
     if (wal->buffer_used > 0) {
         if (om_wal_flush(wal) != 0) {
             return OM_ERR_WAL_FLUSH;
@@ -503,7 +466,7 @@ int om_wal_fsync(OmWal *wal) {
     }
 
     if (fsync(wal->fd) != 0) {
-        return OM_ERR_WAL_FSYNC;
+        return wal->last_error = OM_ERR_WAL_FSYNC;
     }
 
     return OM_OK;
@@ -664,18 +627,7 @@ static int replay_advance_file(OmWalReplay *replay);
 
 /* Fill buffer from file */
 static int replay_fill_buffer(OmWalReplay *replay) {
-    while (replay->eof || replay->file_offset >= replay->file_size) {
-        if (!replay->filename_pattern) {
-            return 0;
-        }
-        int ret = replay_advance_file(replay);
-        if (ret < 0) {
-            return OM_ERR_WAL_READ;
-        }
-        if (ret == 0) {
-            return 0;
-        }
-    }
+    if (replay->file_offset >= replay->file_size) return 0;
 
     /* Move remaining data to beginning of buffer */
     size_t remaining = replay->buffer_valid - replay->buffer_pos;
@@ -697,8 +649,7 @@ static int replay_fill_buffer(OmWalReplay *replay) {
         return OM_ERR_WAL_READ;
     }
     if (n == 0) {
-        replay->eof = true;
-        return replay_fill_buffer(replay);
+        return OM_ERR_WAL_READ;
     }
 
     replay->buffer_valid = remaining + n;
@@ -720,7 +671,7 @@ static int replay_advance_file(OmWalReplay *replay) {
     replay->file_index++;
     if (wal_replay_open_indexed(replay, replay->filename_pattern, replay->file_index) != 0) {
         replay->eof = true;
-        return 0;
+        return errno == ENOENT ? 0 : OM_ERR_WAL_READ;
     }
     replay->buffer_valid = 0;
     replay->buffer_pos = 0;
@@ -728,138 +679,77 @@ static int replay_advance_file(OmWalReplay *replay) {
     return 1;
 }
 
-int om_wal_replay_next(OmWalReplay *replay, OmWalType *type, void **data, 
+int om_wal_replay_next(OmWalReplay *r, OmWalType *type, void **data,
                        uint64_t *sequence, size_t *data_len) {
-    if (!replay || !type || !data || !sequence || !data_len) {
-        return OM_ERR_NULL_PARAM;
-    }
-
-    size_t crc_size = replay->enable_crc32 ? WAL_CRC32_SIZE : 0;
-
-    while (1) {
-        if (replay->buffer_pos + sizeof(OmWalHeader) > replay->buffer_valid) {
-            int ret = replay_fill_buffer(replay);
-            if (ret < 0) return OM_ERR_WAL_READ;
-            if (ret == 0) return 0;
-            if (replay->buffer_pos + sizeof(OmWalHeader) > replay->buffer_valid) {
-                return 0;
-            }
+    if (!r || !type || !data || !sequence || !data_len) return OM_ERR_NULL_PARAM;
+    const size_t crc_size = r->enable_crc32 ? WAL_CRC32_SIZE : 0;
+    for (;;) {
+        size_t available = r->buffer_valid - r->buffer_pos;
+        if (available == 0 && r->file_offset >= r->file_size) {
+            if (!r->filename_pattern) return 0;
+            int rc = replay_advance_file(r);
+            if (rc <= 0) return rc;
         }
-
-        char *record_start = (char *)replay->buffer + replay->buffer_pos;
-
-        /* Track file offset of this record for CRC error reporting */
-        replay->last_record_offset = replay->file_offset
-            - replay->buffer_valid + replay->buffer_pos;
-
-        /* Use memcpy to avoid unaligned access (UBSan) */
-        OmWalHeader header_local;
-        memcpy(&header_local, record_start, sizeof(OmWalHeader));
-        uint64_t packed = header_local.seq_type_len;
-        *sequence = om_wal_header_seq(packed);
-        uint8_t type_byte = om_wal_header_type(packed);
-        uint16_t payload_len = om_wal_header_len(packed);
-
-        /* Treat invalid type as EOF (handles zero padding at file end) */
-        if (type_byte < OM_WAL_INSERT || (type_byte > OM_WAL_ACTIVATE && type_byte < OM_WAL_USER_BASE)) {
-            if (replay->filename_pattern) {
-                replay->buffer_pos = replay->buffer_valid;
-                int ret = replay_fill_buffer(replay);
-                if (ret < 0) return OM_ERR_WAL_READ;
-                if (ret == 0) return 0;
-                continue;
-            }
-            return 0;  /* EOF - not a valid record */
+        while (r->buffer_valid - r->buffer_pos < sizeof(OmWalHeader) && r->file_offset < r->file_size) {
+            int rc = replay_fill_buffer(r);
+            if (rc <= 0) return OM_ERR_WAL_READ;
         }
-        *type = (OmWalType)type_byte;
-
-        replay->buffer_pos += sizeof(OmWalHeader);
-
-        if (*type == OM_WAL_INSERT) {
-        if (replay->buffer_pos + sizeof(OmWalInsert) > replay->buffer_valid) {
-            int ret = replay_fill_buffer(replay);
-            if (ret < 0) return OM_ERR_WAL_READ;
-            if (ret == 0 || replay->buffer_pos + sizeof(OmWalInsert) > replay->buffer_valid) {
-                return OM_ERR_WAL_TRUNCATED;
+        available = r->buffer_valid - r->buffer_pos;
+        if (!available) continue;
+        uint64_t offset = r->file_offset - r->buffer_valid + r->buffer_pos;
+        unsigned char *start = (unsigned char *)r->buffer + r->buffer_pos;
+        uint64_t packed = 0;
+        if (available >= sizeof(packed)) memcpy(&packed, start, sizeof(packed));
+        /* Padding is ONLY all-zero bytes through the next writer block boundary.
+         * Short headers can be padding too; nonzero damage never means EOF. */
+        if (available < sizeof(packed) || packed == 0) {
+            size_t pad = WAL_ALIGN - (offset & WAL_ALIGN_MASK);
+            while (r->buffer_valid - r->buffer_pos < pad && r->file_offset < r->file_size) {
+                int rc = replay_fill_buffer(r);
+                if (rc <= 0) return OM_ERR_WAL_READ;
             }
-            record_start = (char *)replay->buffer + replay->buffer_pos - sizeof(OmWalHeader);
+            if (r->buffer_valid - r->buffer_pos < pad) return OM_ERR_WAL_TRUNCATED;
+            start = (unsigned char *)r->buffer + r->buffer_pos;
+            for (size_t i = 0; i < pad; i++) if (start[i]) return OM_ERR_WAL_READ;
+            r->buffer_pos += pad;
+            continue;
         }
-
-        /* Use memcpy to read OmWalInsert header to avoid unaligned access */
-        OmWalInsert insert_local;
-        memcpy(&insert_local, (char *)replay->buffer + replay->buffer_pos, sizeof(OmWalInsert));
-        size_t actual_data_len = sizeof(OmWalInsert) + insert_local.user_data_size + insert_local.aux_data_size;
-        *data_len = actual_data_len;
-
-        size_t needed = *data_len + crc_size;
-        if (replay->buffer_pos + needed > replay->buffer_valid) {
-            int ret = replay_fill_buffer(replay);
-            if (ret < 0) return OM_ERR_WAL_READ;
-            if (ret == 0 || replay->buffer_pos + needed > replay->buffer_valid) {
-                return OM_ERR_WAL_TRUNCATED;
-            }
-            record_start = (char *)replay->buffer + replay->buffer_pos - sizeof(OmWalHeader);
+        uint8_t tag = om_wal_header_type(packed);
+        size_t len = om_wal_header_len(packed);
+        uint64_t seq = om_wal_header_seq(packed);
+        if (tag < OM_WAL_INSERT || (tag > OM_WAL_ACTIVATE && tag < OM_WAL_USER_BASE) ||
+            !seq || (r->last_sequence && seq != r->last_sequence + 1)) return OM_ERR_WAL_READ;
+        size_t total = sizeof(packed) + len + crc_size;
+        if (total > r->buffer_size) return OM_ERR_WAL_TRUNCATED;
+        while (r->buffer_valid - r->buffer_pos < total && r->file_offset < r->file_size) {
+            int rc = replay_fill_buffer(r);
+            if (rc <= 0) return OM_ERR_WAL_READ;
         }
-
-        *data = (char *)replay->buffer + replay->buffer_pos;
-
-        if (replay->enable_crc32) {
-            uint32_t stored_crc;
-            memcpy(&stored_crc, (char *)replay->buffer + replay->buffer_pos + *data_len, WAL_CRC32_SIZE);
-            uint32_t computed_crc = crc32_compute(record_start, sizeof(OmWalHeader) + *data_len);
-            replay->last_stored_crc = stored_crc;
-            replay->last_computed_crc = computed_crc;
-            replay->buffer_pos += *data_len + crc_size;
-            replay->last_sequence = *sequence;
-            if (stored_crc != computed_crc) {
-                return OM_ERR_WAL_CRC_MISMATCH;
-            }
-        } else {
-            replay->buffer_pos += *data_len;
-            replay->last_sequence = *sequence;
-        }
-
-            return 1;
-        } else {
-        *data_len = payload_len;
-
-        size_t needed = *data_len + crc_size;
-        if (replay->buffer_pos + needed > replay->buffer_valid) {
-            int ret = replay_fill_buffer(replay);
-            if (ret < 0) return OM_ERR_WAL_READ;
-            if (ret == 0 || replay->buffer_pos + needed > replay->buffer_valid) {
-                return OM_ERR_WAL_TRUNCATED;
-            }
-            record_start = (char *)replay->buffer + replay->buffer_pos - sizeof(OmWalHeader);
-        }
-
-        *data = (char *)replay->buffer + replay->buffer_pos;
-
-        if (replay->enable_crc32) {
-            uint32_t stored_crc;
-            memcpy(&stored_crc, (char *)replay->buffer + replay->buffer_pos + *data_len, WAL_CRC32_SIZE);
-            uint32_t computed_crc = crc32_compute(record_start, sizeof(OmWalHeader) + *data_len);
-            replay->last_stored_crc = stored_crc;
-            replay->last_computed_crc = computed_crc;
-            replay->buffer_pos += *data_len + crc_size;
-            replay->last_sequence = *sequence;
-            if (stored_crc != computed_crc) {
-                return OM_ERR_WAL_CRC_MISMATCH;
-            }
-        } else {
-            replay->buffer_pos += *data_len;
-            replay->last_sequence = *sequence;
-        }
-
-        if (*type >= OM_WAL_USER_BASE && replay->user_handler) {
-            int ret = replay->user_handler(*type, *data, *data_len, replay->user_ctx);
-            if (ret != 0) {
+        if (r->buffer_valid - r->buffer_pos < total) return OM_ERR_WAL_TRUNCATED;
+        start = (unsigned char *)r->buffer + r->buffer_pos;
+        if (tag == OM_WAL_INSERT) {
+            OmWalInsert rec;
+            if (len < sizeof(rec)) return OM_ERR_WAL_READ;
+            memcpy(&rec, start + sizeof(packed), sizeof(rec));
+            if ((uint64_t)sizeof(rec) + rec.user_data_size + rec.aux_data_size != len)
                 return OM_ERR_WAL_READ;
-            }
+        } else if ((tag == OM_WAL_CANCEL && len != sizeof(OmWalCancel)) ||
+                   (tag == OM_WAL_MATCH && len != sizeof(OmWalMatch)) ||
+                   (tag == OM_WAL_DEACTIVATE && len != sizeof(OmWalDeactivate)) ||
+                   (tag == OM_WAL_ACTIVATE && len != sizeof(OmWalActivate))) return OM_ERR_WAL_READ;
+        r->last_record_offset = offset;
+        if (r->enable_crc32) {
+            memcpy(&r->last_stored_crc, start + sizeof(packed) + len, WAL_CRC32_SIZE);
+            r->last_computed_crc = crc32_compute(start, sizeof(packed) + len);
+            if (r->last_stored_crc != r->last_computed_crc) return OM_ERR_WAL_CRC_MISMATCH;
         }
-
-            return 1;
-        }
+        *type = (OmWalType)tag; *sequence = seq; *data_len = len;
+        *data = start + sizeof(packed);
+        r->buffer_pos += total;
+        r->last_sequence = seq;
+        if (tag >= OM_WAL_USER_BASE && r->user_handler && r->user_handler(*type, *data, len, r->user_ctx))
+            return OM_ERR_WAL_READ;
+        return 1;
     }
 }
 

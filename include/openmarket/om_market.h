@@ -51,12 +51,11 @@ typedef struct OmMarketOrderState {
 KHASH_MAP_INIT_INT64(om_market_order_map, OmMarketOrderState)
 KHASH_SET_INIT_INT64(om_market_order_set)
 KHASH_MAP_INIT_INT(om_market_pair_map, uint32_t)
-/* The delta map value carries both the signed delta since last flush AND the
- * running absolute per-viewer qty at that price. Maintaining abs_qty in the
- * same entry the process path already touches lets copy_deltas report it O(1)
- * at flush, replacing the O(orders-in-product) order-set walk get_qty did —
- * with NO second map (the prior 131k-map attempt thrashed the process path). */
+/* Persistent private quantities and a price-linked dirty list share one map.
+ * Publication traverses only touched prices, even across consecutive windows. */
 typedef struct OmMarketDeltaEntry {
+    uint64_t next_dirty; /* UINT64_MAX terminates the private dirty list */
+    bool dirty;
     int64_t delta;       /* signed change since last flush */
     uint64_t abs_qty;    /* running per-viewer absolute qty at this price */
 } OmMarketDeltaEntry;
@@ -157,6 +156,7 @@ typedef struct OmMarketWorker {
     khash_t(om_market_qty_map) *scratch_qty_map; /**< Reused temp map for copy_full */
     uint8_t *ladder_dirty;          /**< 64-byte aligned dirty flags */
     khash_t(om_market_delta_map) **ladder_deltas;
+    uint64_t *delta_heads; /* one dirty-price head per ladder side */
     khash_t(om_market_pair_map) *pair_to_ladder;
     /* Dirty work-list: the indices of ladders marked dirty since the last
      * compaction, so a flush walks O(dirty) instead of O(subscription_count).

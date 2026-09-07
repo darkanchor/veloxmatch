@@ -124,6 +124,7 @@ struct OmDualSlab;
 /* WAL context */
 typedef struct OmWal {
     int fd;                     /* File descriptor (O_DIRECT if enabled) */
+    int last_error;             /* Sticky writer failure; never retry a torn append */
     void *buffer;               /* Write buffer (aligned for O_DIRECT) */
     void *buffer_unaligned;     /* Original malloc pointer for freeing */
     size_t buffer_size;         /* Total buffer size */

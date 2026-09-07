@@ -1,0 +1,2058 @@
+{
+  "results.jsonl": {
+    "baseline SHM": {
+      "n": 9,
+      "median_ns": 62.04,
+      "min_ns": 55.05,
+      "max_ns": 75.28,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 59.22,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 62.04,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 61.71,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 67.68,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 75.28,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 68.21,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 62.06,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 55.05,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 60.91,
+          "failed": false
+        }
+      ]
+    },
+    "baseline SHM(mixed,batch=32)": {
+      "n": 9,
+      "median_ns": 23.92,
+      "min_ns": 21.72,
+      "max_ns": 27.73,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 21.72,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 23.53,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 23.92,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 26.68,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 24.49,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 27.73,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 25.36,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 21.8,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 21.96,
+          "failed": false
+        }
+      ]
+    },
+    "baseline TCP(loopback)": {
+      "n": 9,
+      "median_ns": 11858.41,
+      "min_ns": 10779.28,
+      "max_ns": 14850.16,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 11349.39,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 11241.14,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 13242.79,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 14850.16,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 11858.41,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 12983.06,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 12162.82,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 11208.5,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 10779.28,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market low insert": {
+      "n": 9,
+      "median_ns": 2337.28,
+      "min_ns": 2249.94,
+      "max_ns": 3736.2,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2249.94,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 2267.97,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3736.2,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 2537.11,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 2337.28,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 3505.58,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 2269.51,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 2549.63,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 2278.37,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market low match": {
+      "n": 9,
+      "median_ns": 2491.9,
+      "min_ns": 2340.9,
+      "max_ns": 2691.66,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2537.21,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 2491.9,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 2541.51,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 2498.25,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 2351.07,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 2691.66,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 2340.9,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 2472.3,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 2341.25,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market low cancel": {
+      "n": 9,
+      "median_ns": 2867.76,
+      "min_ns": 2487.94,
+      "max_ns": 5314.56,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2580.78,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 4655.42,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3673.55,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 4524.9,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 2652.97,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 2867.76,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 5314.56,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 2744.4,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 2487.94,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market low blended": {
+      "n": 9,
+      "median_ns": 2573.9,
+      "min_ns": 2318.19,
+      "max_ns": 3371.53,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2369.2,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 2573.9,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3371.53,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 2724.23,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 2372.98,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 3197.62,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 2595.44,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 2545.91,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 2318.19,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market high insert": {
+      "n": 9,
+      "median_ns": 24776.7,
+      "min_ns": 20374.96,
+      "max_ns": 39706.68,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 21450.22,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 23339.39,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 39706.68,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 32598.0,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 21313.22,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 29317.94,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 28116.0,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 24776.7,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 20374.96,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market high match": {
+      "n": 9,
+      "median_ns": 33021.07,
+      "min_ns": 23383.59,
+      "max_ns": 42323.95,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 38952.74,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 33559.77,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 42323.95,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 32002.57,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 25823.1,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 35191.89,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 32322.09,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 33021.07,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 23383.59,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market high cancel": {
+      "n": 9,
+      "median_ns": 38072.08,
+      "min_ns": 27497.27,
+      "max_ns": 53658.68,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 41484.41,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 41490.35,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 47542.76,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 38072.08,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 27497.27,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 53658.68,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 30272.67,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 35965.04,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 31363.26,
+          "failed": false
+        }
+      ]
+    },
+    "baseline market high blended": {
+      "n": 9,
+      "median_ns": 28704.39,
+      "min_ns": 22376.38,
+      "max_ns": 41275.47,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 28704.39,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 28220.6,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 41275.47,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 32966.78,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 23284.59,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 33514.2,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 29593.49,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 28368.84,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 22376.38,
+          "failed": false
+        }
+      ]
+    },
+    "candidate SHM": {
+      "n": 9,
+      "median_ns": 65.47,
+      "min_ns": 55.34,
+      "max_ns": 76.76,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 65.47,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 76.76,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 62.69,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 72.62,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 65.61,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 75.11,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 62.25,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 55.34,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 60.13,
+          "failed": false
+        }
+      ]
+    },
+    "candidate SHM(mixed,batch=32)": {
+      "n": 9,
+      "median_ns": 24.29,
+      "min_ns": 21.72,
+      "max_ns": 29.23,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 21.72,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 22.81,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 24.29,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 29.23,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 24.83,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 26.77,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 26.34,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 21.86,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 23.35,
+          "failed": false
+        }
+      ]
+    },
+    "candidate TCP(loopback)": {
+      "n": 9,
+      "median_ns": 12347.82,
+      "min_ns": 10578.21,
+      "max_ns": 15983.81,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 10578.21,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 12656.29,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 12988.71,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 14088.66,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 12347.82,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 11760.8,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 15983.81,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 11918.94,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 11869.14,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market low insert": {
+      "n": 9,
+      "median_ns": 3343.87,
+      "min_ns": 2868.44,
+      "max_ns": 4139.32,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2868.44,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 3820.45,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3111.68,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 4040.24,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 3311.05,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 4139.32,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 3343.87,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 3516.7,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 3005.1,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market low match": {
+      "n": 9,
+      "median_ns": 3568.44,
+      "min_ns": 2864.41,
+      "max_ns": 6134.1,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2920.16,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 6004.32,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3163.45,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 4011.43,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 3568.44,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 2864.41,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 3781.71,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 2926.09,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 6134.1,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market low cancel": {
+      "n": 9,
+      "median_ns": 3327.34,
+      "min_ns": 3077.89,
+      "max_ns": 4796.05,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 3077.89,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 3113.94,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 4796.05,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 3381.55,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 3327.34,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 3486.13,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 4225.44,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 3164.02,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 3195.78,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market low blended": {
+      "n": 9,
+      "median_ns": 3563.38,
+      "min_ns": 2904.9,
+      "max_ns": 4404.96,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 2904.9,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 4404.96,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 3295.65,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 3965.73,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 3389.9,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 3691.53,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 3563.38,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 3304.25,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 3962.87,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market high insert": {
+      "n": 9,
+      "median_ns": 32101.94,
+      "min_ns": 29750.63,
+      "max_ns": 43869.41,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 29750.63,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 31337.74,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 39867.55,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 31648.88,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 39788.63,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 31908.6,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 43869.41,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 40847.76,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 32101.94,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market high match": {
+      "n": 9,
+      "median_ns": 39126.73,
+      "min_ns": 32071.63,
+      "max_ns": 48344.32,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 37279.05,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 40955.89,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 48344.32,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 38792.1,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 42340.11,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 39126.73,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 39071.8,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 46774.45,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 32071.63,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market high cancel": {
+      "n": 9,
+      "median_ns": 43397.42,
+      "min_ns": 32782.49,
+      "max_ns": 60488.91,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 38159.27,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 60488.91,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 43397.42,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 39171.95,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 53967.94,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 47077.22,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 37360.28,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 43440.96,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 32782.49,
+          "failed": false
+        }
+      ]
+    },
+    "candidate market high blended": {
+      "n": 9,
+      "median_ns": 37138.3,
+      "min_ns": 32160.9,
+      "max_ns": 42885.09,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 32850.02,
+          "failed": false
+        },
+        {
+          "trial": 1,
+          "ns": 37138.3,
+          "failed": false
+        },
+        {
+          "trial": 2,
+          "ns": 42763.57,
+          "failed": false
+        },
+        {
+          "trial": 3,
+          "ns": 34544.15,
+          "failed": false
+        },
+        {
+          "trial": 4,
+          "ns": 41972.01,
+          "failed": false
+        },
+        {
+          "trial": 5,
+          "ns": 35590.9,
+          "failed": false
+        },
+        {
+          "trial": 6,
+          "ns": 41779.21,
+          "failed": false
+        },
+        {
+          "trial": 7,
+          "ns": 42885.09,
+          "failed": false
+        },
+        {
+          "trial": 8,
+          "ns": 32160.9,
+          "failed": false
+        }
+      ]
+    },
+    "baseline poll producers=0": {
+      "n": 9,
+      "median_ns": 113.62,
+      "min_ns": 98.58,
+      "max_ns": 137.18,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 103.53,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 137.18,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 131.68,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 119.76,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 113.62,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 126.62,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 101.64,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 98.58,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 109.71,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "candidate poll producers=0": {
+      "n": 9,
+      "median_ns": 119.7,
+      "min_ns": 106.51,
+      "max_ns": 152.9,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 111.73,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 119.7,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 152.9,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 140.48,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 118.67,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 134.07,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 106.51,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 121.54,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 114.02,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "candidate copy producers=0": {
+      "n": 9,
+      "median_ns": 129.62,
+      "min_ns": 102.09,
+      "max_ns": 154.87,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 121.89,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 143.57,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 148.84,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 154.87,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 122.36,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 132.38,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 124.96,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 129.62,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 102.09,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "baseline poll producers=1": {
+      "n": 9,
+      "median_ns": 154.15,
+      "min_ns": 120.63,
+      "max_ns": 163.25,
+      "failed_runs": 9,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 150.54,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 1274414
+        },
+        {
+          "trial": 1,
+          "ns": 155.73,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 1889742
+        },
+        {
+          "trial": 2,
+          "ns": 163.25,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 1707427
+        },
+        {
+          "trial": 3,
+          "ns": 135.32,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 331994
+        },
+        {
+          "trial": 4,
+          "ns": 163.19,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 939887
+        },
+        {
+          "trial": 5,
+          "ns": 120.63,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 2401864
+        },
+        {
+          "trial": 6,
+          "ns": 144.84,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 669622
+        },
+        {
+          "trial": 7,
+          "ns": 154.89,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 582582
+        },
+        {
+          "trial": 8,
+          "ns": 154.15,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 397675
+        }
+      ]
+    },
+    "candidate poll producers=1": {
+      "n": 9,
+      "median_ns": 139.84,
+      "min_ns": 126.67,
+      "max_ns": 168.04,
+      "failed_runs": 8,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 167.66,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 455537
+        },
+        {
+          "trial": 1,
+          "ns": 126.96,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 2288342
+        },
+        {
+          "trial": 2,
+          "ns": 131.9,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 797236
+        },
+        {
+          "trial": 3,
+          "ns": 139.84,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 2588841
+        },
+        {
+          "trial": 4,
+          "ns": 126.67,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 1295997
+        },
+        {
+          "trial": 5,
+          "ns": 144.55,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 3468261
+        },
+        {
+          "trial": 6,
+          "ns": 130.89,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 1142511
+        },
+        {
+          "trial": 7,
+          "ns": 168.04,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 154.92,
+          "failed": true,
+          "records": 2000000,
+          "payload_errors": 2684614
+        }
+      ]
+    },
+    "candidate copy producers=1": {
+      "n": 9,
+      "median_ns": 141.28,
+      "min_ns": 135.33,
+      "max_ns": 154.66,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 151.05,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 140.66,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 140.5,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 136.56,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 135.33,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 143.58,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 141.28,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 153.32,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 154.66,
+          "failed": false,
+          "records": 2000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "baseline poll producers=3": {
+      "n": 9,
+      "median_ns": 137.86,
+      "min_ns": 107.06,
+      "max_ns": 225.45,
+      "failed_runs": 9,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 175.87,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 4487802
+        },
+        {
+          "trial": 1,
+          "ns": 166.86,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 4356326
+        },
+        {
+          "trial": 2,
+          "ns": 223.34,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 8471943
+        },
+        {
+          "trial": 3,
+          "ns": 130.78,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 2262417
+        },
+        {
+          "trial": 4,
+          "ns": 225.45,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 10115330
+        },
+        {
+          "trial": 5,
+          "ns": 126.45,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 1356649
+        },
+        {
+          "trial": 6,
+          "ns": 107.06,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 153687
+        },
+        {
+          "trial": 7,
+          "ns": 117.97,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 439118
+        },
+        {
+          "trial": 8,
+          "ns": 137.86,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 2260587
+        }
+      ]
+    },
+    "candidate poll producers=3": {
+      "n": 9,
+      "median_ns": 142.05,
+      "min_ns": 111.48,
+      "max_ns": 200.87,
+      "failed_runs": 9,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 153.4,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 2944321
+        },
+        {
+          "trial": 1,
+          "ns": 179.49,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 8304770
+        },
+        {
+          "trial": 2,
+          "ns": 145.43,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 2195448
+        },
+        {
+          "trial": 3,
+          "ns": 200.87,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 7371767
+        },
+        {
+          "trial": 4,
+          "ns": 115.31,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 890473
+        },
+        {
+          "trial": 5,
+          "ns": 111.48,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 672013
+        },
+        {
+          "trial": 6,
+          "ns": 118.97,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 1539354
+        },
+        {
+          "trial": 7,
+          "ns": 135.35,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 1062594
+        },
+        {
+          "trial": 8,
+          "ns": 142.05,
+          "failed": true,
+          "records": 6000000,
+          "payload_errors": 1747703
+        }
+      ]
+    },
+    "candidate copy producers=3": {
+      "n": 9,
+      "median_ns": 130.22,
+      "min_ns": 107.49,
+      "max_ns": 165.66,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 132.5,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 132.8,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 165.66,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 116.09,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 142.81,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 130.22,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 119.13,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 107.49,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 110.79,
+          "failed": false,
+          "records": 6000000,
+          "payload_errors": 0
+        }
+      ]
+    }
+  },
+  "serial-long.jsonl": {
+    "baseline poll producers=0": {
+      "n": 9,
+      "median_ns": 107.03,
+      "min_ns": 102.32,
+      "max_ns": 110.97,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 110.18,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 106.74,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 107.03,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 106.73,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 102.32,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 110.97,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 108.58,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 103.55,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 109.13,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "candidate poll producers=0": {
+      "n": 9,
+      "median_ns": 106.1,
+      "min_ns": 101.91,
+      "max_ns": 109.76,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 108.11,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 104.21,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 101.91,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 109.76,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 106.1,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 105.82,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 106.88,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 106.82,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 105.92,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        }
+      ]
+    },
+    "candidate copy producers=0": {
+      "n": 9,
+      "median_ns": 113.69,
+      "min_ns": 106.39,
+      "max_ns": 124.58,
+      "failed_runs": 0,
+      "samples": [
+        {
+          "trial": 0,
+          "ns": 115.68,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 1,
+          "ns": 115.69,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 2,
+          "ns": 113.69,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 3,
+          "ns": 114.47,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 4,
+          "ns": 109.46,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 5,
+          "ns": 111.55,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 6,
+          "ns": 113.11,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 7,
+          "ns": 106.39,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        },
+        {
+          "trial": 8,
+          "ns": 124.58,
+          "failed": false,
+          "records": 20000000,
+          "payload_errors": 0
+        }
+      ]
+    }
+  }
+}

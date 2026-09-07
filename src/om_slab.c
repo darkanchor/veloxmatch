@@ -198,5 +198,6 @@ void om_slab_free(OmDualSlab *slab, OmSlabSlot *slot) {
 
 /* Generate next unique order ID (auto-increment, starts at 1) */
 uint32_t om_slab_next_order_id(OmDualSlab *slab) {
+    if (!slab->next_order_id) return 0;
     return slab->next_order_id++;
 }

@@ -28,3 +28,10 @@ target_link_libraries(bench_bus_perf ombus Threads::Threads m)
 if(NOT APPLE)
     target_link_libraries(bench_bus_perf rt)
 endif()
+
+# This measurement fixture uses Linux affinity and x86 pause instructions.
+# Baseline builds may compile the same source with BENCH_HAS_COPY=0.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i.86)$")
+    add_executable(bench_bus_mp_perf bench_bus_mp_perf.c)
+    target_link_libraries(bench_bus_mp_perf ombusmp Threads::Threads)
+endif()

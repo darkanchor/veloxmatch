@@ -21,6 +21,8 @@ typedef struct OmOrderbookContext {
     uint32_t *org_heads;                 /**< Per-product org head indices (size=max_products*max_org) */
     OmHashMap *order_hashmap;           /**< Hashmap: order_id -> OmOrderEntry */
     uint32_t next_slot_idx;             /**< Next slot index hint for Q0 */
+    struct OmPriceNode *price_nodes;     /**< Preallocated node per slab slot */
+    struct OmPriceNode **price_roots;    /**< Bid/ask AVL roots per product */
     struct OmWal *wal;                  /**< Optional WAL for durability (NULL if disabled) */
 } OmOrderbookContext;
 
