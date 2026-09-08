@@ -308,6 +308,12 @@ static inline bool om_engine_has_pre_booked(const OmEngine *engine) {
  */
 int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker);
 
+/** Match with an unconditional same-org exclusion, skipping homogeneous levels.
+ * Same-org candidates never invoke can_match; other candidates retain the
+ * normal callback and strict price/FIFO order. Do not use for cancel/decrement
+ * self-trade policies, whose callbacks have side effects. */
+int om_engine_match_excluding_org(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker);
+
 /**
  * Cancel a single order by order ID
  *

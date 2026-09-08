@@ -734,11 +734,134 @@ START_TEST(test_engine_cancel_org_all)
 }
 END_TEST
 
+
+START_TEST(test_engine_exclude_org_skips_homogeneous_level)
+{
+    OmEngine engine;
+    TestMatchCtx ctx = {.pre_booked_allow = true};
+    init_engine_with_ctx(&engine, &ctx);
+    /* The alternate workload can leave a deep FIFO of ineligible own orders. */
+    for (unsigned i = 0; i < 500; ++i) {
+        OmSlabSlot *maker = make_order(&engine, 100, 1, OM_SIDE_ASK | OM_TYPE_LIMIT);
+        ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, maker), 0);
+    }
+    OmSlabSlot *other = make_order(&engine, 101, 2, OM_SIDE_ASK | OM_TYPE_LIMIT);
+    other->org = 2;
+    uint32_t other_id = other->order_id;
+    ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, other), 0);
+    OmSlabSlot *taker = make_order(&engine, 101, 1, OM_SIDE_BID | OM_TYPE_LIMIT);
+    ck_assert_int_eq(om_engine_match_excluding_org(&engine, 0, taker), 0);
+    ck_assert_uint_eq(ctx.can_match_calls, 1);
+    ck_assert_uint_eq(ctx.on_deal_calls, 1);
+    ck_assert_uint_eq(ctx.dealt_makers[0], other_id);
+    ck_assert_uint_eq(other->volume_remain, 1);
+    ck_assert_uint_eq(om_orderbook_get_best_ask(&engine.orderbook, 0), 100);
+    om_slab_free(&engine.orderbook.slab, taker);
+    om_engine_destroy(&engine);
+}
+END_TEST
+
+START_TEST(test_engine_exclude_org_mixed_fifo_and_summary_removal)
+{
+    OmEngine engine;
+    TestMatchCtx ctx = {.pre_booked_allow = true};
+    init_engine_with_ctx(&engine, &ctx);
+    OmSlabSlot *own = make_order(&engine, 100, 1, OM_SIDE_ASK | OM_TYPE_LIMIT);
+    OmSlabSlot *first = make_order(&engine, 100, 1, OM_SIDE_ASK | OM_TYPE_LIMIT);
+    OmSlabSlot *second = make_order(&engine, 100, 2, OM_SIDE_ASK | OM_TYPE_LIMIT);
+    first->org = 3; second->org = 3;
+    uint32_t first_id = first->order_id, second_id = second->order_id;
+    ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, own), 0);
+    ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, first), 0);
+    /* An unknown level must return the first eligible maker in FIFO order. */
+    uint32_t head = om_slot_get_idx(&engine.orderbook.slab, own);
+    ck_assert_uint_eq(om_orderbook_first_other_org(&engine.orderbook, head, 2), head);
+    ck_assert_uint_eq(om_orderbook_first_other_org(&engine.orderbook, head, 1), om_slot_get_idx(&engine.orderbook.slab, first));
+    ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, second), 0);
+    OmSlabSlot *taker = make_order(&engine, 100, 2, OM_SIDE_BID | OM_TYPE_LIMIT);
+    ck_assert_int_eq(om_engine_match_excluding_org(&engine, 0, taker), 0);
+    ck_assert_uint_eq(ctx.dealt_makers[0], first_id);
+    ck_assert_uint_eq(ctx.dealt_makers[1], second_id);
+    ck_assert_uint_eq(second->volume_remain, 1);
+    om_slab_free(&engine.orderbook.slab, taker);
+    /* Removing the different tail allows a full scan to relearn homogeneity. */
+    ck_assert(om_engine_cancel(&engine, second_id));
+    ck_assert_uint_eq(om_orderbook_first_other_org(&engine.orderbook, head, 1), OM_SLOT_IDX_NULL);
+    OmSlabSlot *tail = make_order(&engine, 100, 1, OM_SIDE_ASK | OM_TYPE_LIMIT);
+    tail->org = 3;
+    ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, tail), 0);
+    ck_assert(om_orderbook_cancel(&engine.orderbook, own->order_id));
+    head = om_slot_get_idx(&engine.orderbook.slab, tail);
+    ck_assert_uint_eq(om_orderbook_first_other_org(&engine.orderbook, head, 3), OM_SLOT_IDX_NULL);
+    /* Unlink/reactivate uses the same summary accounting as fills/cancels. */
+    ck_assert(om_engine_deactivate(&engine, tail->order_id));
+    ck_assert(om_engine_activate(&engine, tail->order_id));
+    ck_assert_uint_eq(om_orderbook_first_other_org(&engine.orderbook, head, 3), OM_SLOT_IDX_NULL);
+    om_engine_destroy(&engine);
+}
+END_TEST
+
+
+static void assert_other_org_fifo(OmEngine *engine)
+{
+    OmOrderbookContext *book = &engine->orderbook;
+    uint32_t level = book->products[0].ask_head_q1;
+    while (level != OM_SLOT_IDX_NULL) {
+        OmSlabSlot *head = om_slot_from_idx(&book->slab, level);
+        for (uint16_t org = 0; org < 4; ++org) {
+            uint32_t expected = level;
+            while (expected != OM_SLOT_IDX_NULL) {
+                OmSlabSlot *slot = om_slot_from_idx(&book->slab, expected);
+                if (slot->org != org) break;
+                expected = slot->queue_nodes[OM_Q2_TIME_FIFO].next_idx;
+            }
+            ck_assert_uint_eq(om_orderbook_first_other_org(book, level, org), expected);
+        }
+        level = head->queue_nodes[OM_Q1_PRICE_LADDER].next_idx;
+    }
+}
+
+START_TEST(test_engine_org_cache_matches_fifo_across_mutations)
+{
+    OmEngine engine;
+    TestMatchCtx ctx = {.pre_booked_allow = true};
+    init_engine_with_ctx(&engine, &ctx);
+    uint32_t live[512], count = 0, random = 17;
+    for (unsigned i = 0; i < 500; ++i) {
+        random = random * 1664525u + 1013904223u;
+        if (count && i % 3 == 0) {
+            uint32_t at = (random >> 8) % count;
+            if (i & 1) ck_assert(om_engine_cancel(&engine, live[at]));
+            else ck_assert(om_orderbook_cancel(&engine.orderbook, live[at]));
+            live[at] = live[--count];
+        } else {
+            OmSlabSlot *order = make_order(&engine, 100 + (random >> 16) % 3,
+                                           1, OM_SIDE_ASK | OM_TYPE_LIMIT);
+            order->org = (random >> 8) % 4;
+            live[count++] = order->order_id;
+            ck_assert_int_eq(om_orderbook_insert(&engine.orderbook, 0, order), 0);
+        }
+        assert_other_org_fifo(&engine);
+        if (count && i % 13 == 0) {
+            uint32_t id = live[(random >> 8) % count];
+            ck_assert(om_engine_deactivate(&engine, id));
+            assert_other_org_fifo(&engine);
+            ck_assert(om_engine_activate(&engine, id));
+            assert_other_org_fifo(&engine);
+        }
+    }
+    om_engine_destroy(&engine);
+}
+END_TEST
+
 Suite *engine_suite(void)
 {
     Suite *s = suite_create("Engine");
     TCase *tc_core = tcase_create("Core");
 
+    tcase_add_test(tc_core, test_engine_org_cache_matches_fifo_across_mutations);
+    tcase_add_test(tc_core, test_engine_exclude_org_skips_homogeneous_level);
+    tcase_add_test(tc_core, test_engine_exclude_org_mixed_fifo_and_summary_removal);
     tcase_add_test(tc_core, test_engine_init_callbacks);
     tcase_add_test(tc_core, test_engine_callback_context);
     tcase_add_test(tc_core, test_engine_match_pre_booked_cancel);

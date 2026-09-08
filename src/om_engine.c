@@ -119,7 +119,8 @@ void om_engine_destroy(OmEngine *engine)
     memset(engine, 0, sizeof(OmEngine));
 }
 
-int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
+static int engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker,
+                        bool exclude_same_org)
 {
     if (OM_UNLIKELY(!engine || !taker)) {
         return OM_ERR_NULL_PARAM;
@@ -179,6 +180,8 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
         uint32_t next_level_idx = level->queue_nodes[OM_Q1_PRICE_LADDER].next_idx;
         OM_PREFETCH(om_slot_from_idx(slab, next_level_idx));
         uint32_t maker_idx = level_idx;
+        if (exclude_same_org && level->org == taker->org)
+            maker_idx = om_orderbook_first_other_org(book, level_idx, taker->org);
 
         while (OM_LIKELY(maker_idx != OM_SLOT_IDX_NULL && taker_remaining > 0)) {
             OmSlabSlot *maker = om_slot_from_idx(slab, maker_idx);
@@ -187,6 +190,10 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
             }
 
             uint32_t next_maker_idx = maker->queue_nodes[OM_Q2_TIME_FIFO].next_idx;
+            if (exclude_same_org && maker->org == taker->org) {
+                maker_idx = next_maker_idx;
+                continue;
+            }
             OM_PREFETCH(om_slot_from_idx(slab, next_maker_idx));
 
             uint64_t maker_remaining = maker->volume_remain;
@@ -327,6 +334,16 @@ int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
     int insert_rc = om_orderbook_insert(book, product_id, taker);
     if (insert_rc == 0 && has_on_booked) cb->on_booked(taker, cb->user_ctx);
     return insert_rc;
+}
+
+int om_engine_match(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
+{
+    return engine_match(engine, product_id, taker, false);
+}
+
+int om_engine_match_excluding_org(OmEngine *engine, uint16_t product_id, OmSlabSlot *taker)
+{
+    return engine_match(engine, product_id, taker, true);
 }
 
 bool om_engine_cancel(OmEngine *engine, uint32_t order_id)

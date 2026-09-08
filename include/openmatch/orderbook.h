@@ -80,6 +80,11 @@ int om_orderbook_insert(OmOrderbookContext *ctx, uint16_t product_id,
  */
 bool om_orderbook_cancel(OmOrderbookContext *ctx, uint32_t order_id);
 
+/** Return the first FIFO maker at a live level belonging to a different org,
+ * or OM_SLOT_IDX_NULL if none exists. A conservative homogeneous-org cache
+ * skips proven ineligible levels; unknown levels are traversed, never assumed. */
+uint32_t om_orderbook_first_other_org(OmOrderbookContext *ctx, uint32_t head_idx, uint16_t org);
+
 /**
  * Get best bid price for product (O(1))
  * @param ctx Orderbook context

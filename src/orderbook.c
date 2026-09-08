@@ -11,6 +11,9 @@ struct OmPriceNode {
     KAVL_HEAD(struct OmPriceNode) tree;
     uint64_t price;
     uint32_t slot;
+    /* Occupies the original alignment padding: no extra per-slot storage.
+     * UINT32_MAX means mixed/unknown; an org value is a proof of homogeneity. */
+    uint32_t known_org;
 };
 #define price_compare(a, b) (((a)->price > (b)->price) - ((a)->price < (b)->price))
 KAVL_INIT(price, struct OmPriceNode, tree, price_compare)
@@ -18,20 +21,43 @@ KAVL_INIT(price, struct OmPriceNode, tree, price_compare)
 static struct OmPriceNode **price_root(OmOrderbookContext *ctx, uint16_t product, bool bid) {
     return &ctx->price_roots[(size_t)product * 2 + (bid ? 0 : 1)];
 }
-static void price_add(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *slot) {
+static struct OmPriceNode *price_add(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *slot) {
     uint32_t index = om_slot_get_idx(&ctx->slab, slot);
     struct OmPriceNode *node = &ctx->price_nodes[index];
     memset(node, 0, sizeof(*node));
     node->slot = index; node->price = slot->price;
+    node->known_org = slot->org;
     kavl_insert(price, price_root(ctx, product, bid), node, NULL);
+    return node;
 }
 static void price_remove(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *slot) {
     struct OmPriceNode key = {.price = slot->price};
     kavl_erase(price, price_root(ctx, product, bid), &key, NULL);
 }
 static void price_promote(OmOrderbookContext *ctx, uint16_t product, bool bid, OmSlabSlot *old, OmSlabSlot *next) {
+    uint32_t known_org = ctx->price_nodes[om_slot_get_idx(&ctx->slab, old)].known_org;
     price_remove(ctx, product, bid, old);
-    price_add(ctx, product, bid, next);
+    struct OmPriceNode *node = price_add(ctx, product, bid, next);
+    node->known_org = known_org;
+}
+
+uint32_t om_orderbook_first_other_org(OmOrderbookContext *ctx, uint32_t head_idx, uint16_t org) {
+    if (!ctx || head_idx >= ctx->slab.slab_a.capacity) return OM_SLOT_IDX_NULL;
+    struct OmPriceNode *node = &ctx->price_nodes[head_idx];
+    if (node->known_org != UINT32_MAX)
+        return node->known_org == org ? OM_SLOT_IDX_NULL : head_idx;
+    /* Deletion preserves a homogeneous proof but can leave a mixed cache
+     * conservative. Relearn it only after actually traversing the entire FIFO.
+     * Return the first different maker so matching never scans this prefix twice. */
+    uint32_t idx = head_idx;
+    while (idx != OM_SLOT_IDX_NULL) {
+        OmSlabSlot *slot = om_slot_from_idx(&ctx->slab, idx);
+        if (!slot) return idx; /* Let the matching loop handle the invalid link. */
+        if (slot->org != org) return idx;
+        idx = slot->queue_nodes[OM_Q2_TIME_FIFO].next_idx;
+    }
+    node->known_org = org;
+    return OM_SLOT_IDX_NULL;
 }
 
 int om_orderbook_init(OmOrderbookContext *ctx, const OmSlabConfig *config, struct OmWal *wal,
@@ -276,6 +302,9 @@ int om_orderbook_insert(OmOrderbookContext *ctx, uint16_t product_id,
     } else {
         /* Append order to time queue at this price level (Q2) */
         append_to_time_queue(ctx, head, order);
+        struct OmPriceNode *node = &ctx->price_nodes[om_slot_get_idx(&ctx->slab, head)];
+        if (node->known_org != UINT32_MAX && node->known_org != order->org)
+            node->known_org = UINT32_MAX;
     }
 
     /* Add order to org queue (Q3) per product */
